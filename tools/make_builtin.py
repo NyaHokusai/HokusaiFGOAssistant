@@ -32,6 +32,7 @@ OUT_DIR = os.path.join(BASE_DIR, "assets", "templates", "builtin")
 # 输出名 -> 候选输入文件名（相对 SRC_DIRS，也支持带子文件夹的路径）
 MAPPING = {
     "battle_result": ["战斗结果.png", "battle_result.png", "素材/2,3-战斗结果.png"],
+    "tap_start": ["请点击游戏界面.png", "tap_start.png", "素材/请点击游戏界面.png"],
     "next": ["下一步.png", "next.png", "素材/4-下一步.png"],
     "attack": ["连续出击.png", "attack.png", "素材/5-体力无体力判定-连续出击.png"],
     "support_title": ["助战选择.png", "support.png", "support_title.png", "素材/1-助战选择.png"],

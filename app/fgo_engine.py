@@ -26,6 +26,7 @@ from .recognizer import find_template, load_template
 
 TEMPLATE_LABELS = {
     "battle_result": "战斗结果",
+    "tap_start": "请点击游戏界面",
     "next": "下一步",
     "attack": "连续出击",
     "apple": "黄金果实",
@@ -36,6 +37,7 @@ TEMPLATE_LABELS = {
 # 点击方式：center=屏幕正中央；match=模板命中位置；point=录入的助战位置
 CLICK_ACTION = {
     "battle_result": "center",
+    "tap_start": "center",
     "next": "match",
     "attack": "match",
     "apple": "match",
@@ -44,7 +46,7 @@ CLICK_ACTION = {
 }
 
 # 检测优先级：补体力弹窗最先（此时连续出击已消失），再走结算流程，最后助战
-PRIORITY = ["confirm", "apple", "battle_result", "next", "attack", "support"]
+PRIORITY = ["confirm", "apple", "battle_result", "tap_start", "next", "attack", "support"]
 
 SAME_KEY_COOLDOWN = 2.0  # 同一模板两次点击的最小间隔（等画面切换）
 GLOBAL_GAP = 0.5         # 任意两次点击的最小间隔

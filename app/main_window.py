@@ -48,6 +48,7 @@ CONFIG_PATH = None  # 在 __init__ 里按 BASE_DIR 赋值
 # (key, 界面显示说明)；助战行位置单独处理（见 _build_support_section）
 TEMPLATE_SLOTS = [
     ("battle_result", "「战斗结果」标题（结算页识别，点屏幕正中央）"),
+    ("tap_start", "「请点击游戏界面」提示（点屏幕正中央）"),
     ("next", "「下一步」按钮"),
     ("attack", "「连续出击」按钮"),
     ("apple", "行动力回复弹窗 - 黄金果实行"),
