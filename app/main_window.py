@@ -1,20 +1,21 @@
-"""FGO 连续出击助手 - 主界面。
+"""北斋FGO助手 - 主界面（现代深色主题：侧边栏 + 毛玻璃卡片）。
 
-界面只有三块：目标窗口选择、识别模板录制、开始/结束控制。
+布局：左侧导航栏（运行 / 模板 / 设置 / 日志），右侧堆叠页面。
 开始后引擎持续监控模拟器画面，自动完成：
-点击继续 → 下一步 → 连续出击 →（没体力时吃金苹果补体力）→ 选第一个助战。
-战斗本体由玩家手动打，打完引擎自动接管结算流程。
+战斗结果 → 请点击游戏界面 → 下一步 → 连续出击 →（没体力吃金苹果）→ 选中的助战行。
+战斗本体由玩家手动打，打完引擎自动接管。
 """
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import sys
 import time
 
 import cv2
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -28,6 +29,9 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QRadioButton,
+    QScrollArea,
+    QSizePolicy,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -43,18 +47,162 @@ else:
 TEMPLATE_DIR = os.path.join(BASE_DIR, "assets", "templates")
 META_PATH = os.path.join(TEMPLATE_DIR, "meta.json")
 
-CONFIG_PATH = None  # 在 __init__ 里按 BASE_DIR 赋值
-
-# (key, 界面显示说明)；助战行位置单独处理（见 _build_support_section）
+# (key, 界面显示说明)；助战行位置单独处理
 TEMPLATE_SLOTS = [
-    ("battle_result", "「战斗结果」标题（结算页识别，点屏幕正中央）"),
-    ("tap_start", "「请点击游戏界面」提示（点屏幕正中央）"),
-    ("next", "「下一步」按钮"),
-    ("attack", "「连续出击」按钮"),
-    ("apple", "行动力回复弹窗 - 黄金果实行"),
-    ("confirm", "行动力确认弹窗 - 「决定」按钮"),
-    ("support_title", "「助战选择」标题文字"),
+    ("battle_result", "「战斗结果」标题", "结算页识别，点屏幕正中央"),
+    ("tap_start", "「请点击游戏界面」", "点屏幕正中央"),
+    ("next", "「下一步」按钮", "点击识别位置"),
+    ("attack", "「连续出击」按钮", "点击识别位置"),
+    ("apple", "黄金果实行", "没体力时自动补体力（可选）"),
+    ("confirm", "「决定」按钮", "补体力确认弹窗（可选）"),
+    ("support_title", "「助战选择」标题", "识别助战界面"),
 ]
+
+# ============ 主题（深空科技：8pt 网格 + 12px 圆角 + 克制阴影） ============
+_T = {
+    "bg":          (13, 13, 26),
+    "sidebar":     (22, 22, 40),
+    "card":        (255, 255, 255, 10),   # rgba alpha 0~255
+    "card_border": (255, 255, 255, 18),
+    "primary":     "#6C63FF",
+    "primary_h":   "#7D75FF",
+    "text":        "#E8E8F2",
+    "muted":       "#9A9AB0",
+    "success":     "#3ECFCF",
+    "danger":      "#FF6584",
+    "builtin":     "#7B9DFF",
+}
+
+_BACKDROP_ALPHA = 0.72  # 毛玻璃激活时根背景透明度（透过 Acrylic 看到 blur）
+
+
+def _rgba(rgb, alpha: float) -> str:
+    r, g, b = rgb[0], rgb[1], rgb[2]
+    return f"rgba({r}, {g}, {b}, {alpha})"
+
+
+def build_stylesheet(solid: bool) -> str:
+    """生成全局 QSS。solid=True 时背景不透明（系统不支持毛玻璃的回退）。"""
+    a = 1.0 if solid else _BACKDROP_ALPHA
+    card_a = 0.08 if solid else 0.05
+    t = _T
+    return f"""
+    QWidget {{ color: {t['text']}; font-size: 13px; }}
+    #root {{ background: {_rgba(t['bg'], a)}; }}
+    #sidebar {{
+        background: {_rgba(t['sidebar'], a if not solid else 1.0)};
+        border-right: 1px solid {_rgba(t['card_border'], 0.6)};
+    }}
+    QLabel#appTitle {{ font-size: 16px; font-weight: 700; }}
+    QLabel#appSub {{ font-size: 10px; color: {t['muted']}; letter-spacing: 3px; }}
+    QLabel#sectionTitle {{ font-size: 15px; font-weight: 700; }}
+    QLabel#muted {{ color: {t['muted']}; }}
+
+    QPushButton#nav {{
+        text-align: left; padding: 0 14px; min-height: 38px;
+        border: none; border-radius: 10px; background: transparent;
+        color: {t['muted']}; font-size: 13px; font-weight: 600;
+    }}
+    QPushButton#nav:hover {{ background: rgba(255, 255, 255, 0.07); color: {t['text']}; }}
+    QPushButton#nav:checked {{ background: rgba(108, 99, 255, 0.22); color: {t['text']}; }}
+
+    QFrame#card {{
+        background: rgba(255, 255, 255, {card_a});
+        border: 1px solid {_rgba(t['card_border'], 0.6)};
+        border-radius: 12px;
+    }}
+    QFrame#card[flat="true"] {{ background: transparent; border: none; }}
+
+    QPushButton {{
+        background: rgba(255, 255, 255, {card_a + 0.03}); color: {t['text']};
+        border: 1px solid {_rgba(t['card_border'], 0.6)};
+        border-radius: 10px; padding: 0 16px; min-height: 34px; font-weight: 600;
+    }}
+    QPushButton:hover {{ background: rgba(255, 255, 255, 0.14); }}
+    QPushButton:pressed {{ background: rgba(255, 255, 255, 0.08); }}
+    QPushButton:disabled {{ color: {t['muted']}; background: rgba(255, 255, 255, 0.03); }}
+    QPushButton#primary {{ background: {t['primary']}; border: none; color: white; }}
+    QPushButton#primary:hover {{ background: {t['primary_h']}; }}
+    QPushButton#primary:disabled {{ background: {_rgba((108, 99, 255), 0.35)}; color: rgba(255,255,255,0.6); }}
+    QPushButton#danger {{ background: transparent; color: {t['danger']}; border: 1px solid rgba(255,101,132,0.5); }}
+    QPushButton#danger:hover {{ background: rgba(255,101,132,0.15); }}
+    QPushButton#danger:disabled {{ color: {t['muted']}; border-color: {_rgba(t['card_border'], 0.5)}; }}
+
+    QComboBox, QDoubleSpinBox {{
+        background: rgba(255, 255, 255, {card_a + 0.03}); border: 1px solid {_rgba(t['card_border'], 0.6)};
+        border-radius: 10px; min-height: 34px; padding: 0 10px; color: {t['text']};
+    }}
+    QComboBox:hover, QDoubleSpinBox:hover {{ border-color: {t['primary']}; }}
+    QComboBox::drop-down {{ border: none; width: 26px; }}
+    QComboBox QAbstractItemView {{
+        background: #16162A; border: 1px solid {_rgba(t['card_border'], 0.8)};
+        border-radius: 10px; selection-background-color: rgba(108,99,255,0.35);
+        outline: none;
+    }}
+    QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 18px; }}
+
+    QRadioButton {{ spacing: 6px; }}
+    QRadioButton::indicator {{
+        width: 16px; height: 16px; border-radius: 8px;
+        border: 2px solid {t['muted']}; background: transparent;
+    }}
+    QRadioButton::indicator:checked {{ border: 5px solid {t['primary']}; background: white; }}
+
+    QPlainTextEdit#log {{
+        background: {_rgba(t['card'], 0.9)}; border: 1px solid {_rgba(t['card_border'], 0.6)};
+        border-radius: 12px; padding: 10px;
+        font-family: 'Consolas', 'Courier New', monospace; font-size: 12px; color: #C8C8DE;
+    }}
+    QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px; }}
+    QScrollBar::handle:vertical {{ background: {_rgba(t['card_border'], 0.9)}; border-radius: 4px; min-height: 30px; }}
+    QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
+    QScrollArea {{ border: none; background: transparent; }}
+    QScrollArea > QWidget > QWidget {{ background: transparent; }}
+    """
+
+
+def _enable_backdrop(hwnd: int) -> bool:
+    """开启系统级毛玻璃。返回是否成功（Win11 Acrylic 优先，Win10 走 Accent 兜底）。"""
+    # 深色模式（标题栏）
+    dark = ctypes.c_int(1)
+    try:
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(dark), 4)
+    except Exception:
+        pass
+    # Win11 22H2+ Acrylic
+    try:
+        val = ctypes.c_int(3)  # DWMSBT_TRANSIENTWINDOW = Acrylic
+        ret = ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 38, ctypes.byref(val), 4)
+        if ret == 0:
+            return True
+    except Exception:
+        pass
+    # Win10 Acrylic (SetWindowCompositionAttribute)
+    try:
+        class ACCENTPOLICY(ctypes.Structure):
+            _fields_ = [
+                ("AccentState", ctypes.c_int),
+                ("AccentFlags", ctypes.c_int),
+                ("GradientColor", ctypes.c_uint),
+                ("AnimationId", ctypes.c_int),
+            ]
+
+        class WINCOMPATTRDATA(ctypes.Structure):
+            _fields_ = [
+                ("Attribute", ctypes.c_int),
+                ("Data", ctypes.c_void_p),
+                ("SizeOfData", ctypes.c_size_t),
+            ]
+
+        accent = ACCENTPOLICY(4, 2, 0xCC000000, 0)  # 4=AcrylicBlurBehind，黑色 tint
+        data = WINCOMPATTRDATA(
+            19, ctypes.cast(ctypes.pointer(accent), ctypes.c_void_p), ctypes.sizeof(accent)
+        )
+        if ctypes.windll.user32.SetWindowCompositionAttribute(hwnd, ctypes.byref(data)):
+            return True
+    except Exception:
+        pass
+    return False
 
 
 class MainWindow(QMainWindow):
@@ -64,18 +212,40 @@ class MainWindow(QMainWindow):
         icon_png = os.path.normpath(os.path.join(TEMPLATE_DIR, "..", "icon.png"))
         if os.path.exists(icon_png):
             self.setWindowIcon(QIcon(icon_png))
-        self.resize(680, 620)
+        self.resize(920, 660)
 
         os.makedirs(TEMPLATE_DIR, exist_ok=True)
         self._engine: FgoEngine | None = None
         self._cfg_path = os.path.join(BASE_DIR, "config.json")
         self._cfg = self._load_config()
+        self._backdrop_ok = False
+        self._solid_applied = False
+
+        # 毛玻璃需要窗口背景可透出系统模糊层
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setStyleSheet(build_stylesheet(solid=False))
 
         self._build_ui()
         self._apply_config()
         self.refresh_windows()
         self._restore_window_selection()
         self._refresh_template_status()
+
+    # ================= 毛玻璃 =================
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if not self._backdrop_ok and not self._solid_applied:
+            QTimer.singleShot(0, self._try_backdrop)
+
+    def _try_backdrop(self) -> None:
+        try:
+            hwnd = int(self.winId())
+        except Exception:
+            return
+        self._backdrop_ok = _enable_backdrop(hwnd)
+        if not self._backdrop_ok:
+            self._solid_applied = True
+            self.setStyleSheet(build_stylesheet(solid=True))
 
     # ================= 配置持久化 =================
     def _load_config(self) -> dict:
@@ -126,57 +296,173 @@ class MainWindow(QMainWindow):
             self._engine.set_use_row(self._current_use_row())
         self._save_config()
 
-    # ================= UI =================
-    def _build_ui(self) -> None:
-        central = QWidget()
-        layout = QVBoxLayout(central)
+    # ================= UI 构建 =================
+    @staticmethod
+    def _card(title: str | None = None) -> tuple[QFrame, QVBoxLayout]:
+        card = QFrame()
+        card.setObjectName("card")
+        v = QVBoxLayout(card)
+        v.setContentsMargins(16, 14, 16, 14)
+        v.setSpacing(10)
+        if title:
+            lbl = QLabel(title)
+            lbl.setObjectName("sectionTitle")
+            v.addWidget(lbl)
+        return card, v
 
-        # --- 目标窗口 ---
+    def _build_ui(self) -> None:
+        root = QWidget()
+        root.setObjectName("root")
+        root_layout = QHBoxLayout(root)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        # ---------- 侧边栏 ----------
+        sidebar = QWidget()
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(212)
+        sv = QVBoxLayout(sidebar)
+        sv.setContentsMargins(14, 18, 14, 14)
+        sv.setSpacing(6)
+
+        logo_row = QHBoxLayout()
+        logo = QLabel()
+        icon_png = os.path.normpath(os.path.join(TEMPLATE_DIR, "..", "icon.png"))
+        if os.path.exists(icon_png):
+            logo.setPixmap(QPixmap(icon_png).scaled(40, 40, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        title_col = QVBoxLayout()
+        title_col.setSpacing(0)
+        t1 = QLabel("北斋FGO助手")
+        t1.setObjectName("appTitle")
+        t2 = QLabel("HFA")
+        t2.setObjectName("appSub")
+        title_col.addWidget(t1)
+        title_col.addWidget(t2)
+        logo_row.addWidget(logo)
+        logo_row.addSpacing(8)
+        logo_row.addLayout(title_col, 1)
+        sv.addLayout(logo_row)
+        sv.addSpacing(18)
+
+        self._nav_buttons: list[QPushButton] = []
+        for idx, (name, symbol) in enumerate([("运行", "▶"), ("模板", "▦"), ("设置", "⚙"), ("日志", "☰")]):
+            btn = QPushButton(f"{symbol}   {name}")
+            btn.setObjectName("nav")
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda _, i=idx: self._switch_page(i))
+            sv.addWidget(btn)
+            self._nav_buttons.append(btn)
+        self._nav_buttons[0].setChecked(True)
+
+        sv.addStretch(1)
+        ver = QLabel("v1.0 · HFA")
+        ver.setObjectName("muted")
+        ver.setAlignment(Qt.AlignLeft)
+        sv.addWidget(ver)
+
+        # ---------- 内容区 ----------
+        self._pages = QStackedWidget()
+        self._pages.addWidget(self._build_run_page())      # 0 运行
+        self._pages.addWidget(self._build_template_page()) # 1 模板
+        self._pages.addWidget(self._build_settings_page()) # 2 设置
+        self._pages.addWidget(self._build_log_page())      # 3 日志
+
+        root_layout.addWidget(sidebar)
+        root_layout.addWidget(self._pages, 1)
+        self.setCentralWidget(root)
+
+    def _switch_page(self, idx: int) -> None:
+        self._pages.setCurrentIndex(idx)
+        for i, btn in enumerate(self._nav_buttons):
+            btn.setChecked(i == idx)
+
+    # ---- 页 1：运行 ----
+    def _build_run_page(self) -> QWidget:
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(24, 24, 24, 24)
+        v.setSpacing(16)
+
+        head = QLabel("运行")
+        head.setObjectName("sectionTitle")
+        v.addWidget(head)
+
+        # 状态卡
+        state_card, sv = self._card()
+        self.state_label = QLabel("待机")
+        self.state_label.setStyleSheet(f"font-size: 18px; font-weight: 700; color: {_T['muted']};")
+        self.state_dot = QLabel("●")
+        self.state_dot.setStyleSheet(f"color: {_T['muted']}; font-size: 14px;")
+        row = QHBoxLayout()
+        row.addWidget(self.state_dot)
+        row.addWidget(self.state_label, 1)
+        sv.addLayout(row)
+        state_hint = QLabel("点击「开始」后引擎会持续监控模拟器画面，自动完成对局结束后的全部流程")
+        state_hint.setObjectName("muted")
+        state_hint.setWordWrap(True)
+        sv.addWidget(state_hint)
+        v.addWidget(state_card)
+
+        # 目标窗口卡
+        win_card, wv = self._card("目标窗口")
         win_row = QHBoxLayout()
-        win_row.addWidget(QLabel("目标窗口:"))
+        win_row.setSpacing(8)
         self.win_combo = QComboBox()
         win_row.addWidget(self.win_combo, 1)
         refresh_btn = QPushButton("刷新")
         refresh_btn.clicked.connect(self.refresh_windows)
         win_row.addWidget(refresh_btn)
-        layout.addLayout(win_row)
+        wv.addLayout(win_row)
+        v.addWidget(win_card)
 
-        tip = QLabel(
-            "使用方法：只需框选录入要点的助战行 → 点「开始」→ 手动进入战斗。\n"
-            "打完后程序自动完成：战斗结果页点屏幕正中(×2) → 下一步 → 连续出击 →\n"
-            "（没体力自动吃金苹果）→ 点选中的助战行 → 下一把。\n"
-            "模板已内置（可框选覆盖）；窗口/阈值/助战行设置会自动记住。"
-        )
-        tip.setWordWrap(True)
-        layout.addWidget(tip)
+        # 操作卡
+        op_card, ov = self._card("操作")
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+        self.run_btn = QPushButton("▶  开始")
+        self.run_btn.setObjectName("primary")
+        self.run_btn.setMinimumHeight(40)
+        self.run_btn.setCursor(Qt.PointingHandCursor)
+        self.run_btn.clicked.connect(self.on_start)
+        self.stop_btn = QPushButton("■  结束")
+        self.stop_btn.setObjectName("danger")
+        self.stop_btn.setMinimumHeight(40)
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.setCursor(Qt.PointingHandCursor)
+        self.stop_btn.clicked.connect(self.on_stop)
+        btn_row.addWidget(self.run_btn, 1)
+        btn_row.addWidget(self.stop_btn, 1)
+        ov.addLayout(btn_row)
+        v.addWidget(op_card)
+        v.addStretch(1)
+        return page
 
-        line = QFrame()
-        line.setFrameShape(QFrame.HLine)
-        line.setFrameShadow(QFrame.Sunken)
-        layout.addWidget(line)
+    # ---- 页 2：模板 ----
+    def _build_template_page(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(24, 24, 24, 24)
+        v.setSpacing(16)
 
-        # --- 模板录制 ---
-        layout.addWidget(QLabel("识别模板（内置模板已可直接用，「框选」可覆盖为自定义）:"))
+        head = QLabel("模板与助战")
+        head.setObjectName("sectionTitle")
+        v.addWidget(head)
+
+        tpl_card, tv = self._card("识别模板（内置可直接用，框选可覆盖为自定义）")
         self._slot_status: dict[str, QLabel] = {}
-        for key, desc in TEMPLATE_SLOTS:
-            row = QHBoxLayout()
-            name = QLabel(desc)
-            row.addWidget(name, 1)
-            status = QLabel()
-            status.setMinimumWidth(72)
-            status.setAlignment(Qt.AlignCenter)
-            self._slot_status[key] = status
-            row.addWidget(status)
-            btn = QPushButton("框选")
-            btn.setFixedWidth(60)
-            btn.clicked.connect(lambda _, k=key: self.on_record(k))
-            row.addWidget(btn)
-            layout.addLayout(row)
+        grid = QVBoxLayout()
+        grid.setSpacing(8)
+        for key, name, desc in TEMPLATE_SLOTS:
+            grid.addLayout(self._slot_row(key, name, desc))
+        tv.addLayout(grid)
+        v.addWidget(tpl_card)
 
-        # --- 助战行（三行可选，运行中可切换） ---
-        layout.addWidget(QLabel("助战点击位置（框选整行，点击其中心；至少录一行）:"))
+        sup_card, sv2 = self._card("助战点击位置（框选整行，点击其中心；至少录一行）")
         use_row = QHBoxLayout()
-        use_row.addWidget(QLabel("  使用:"))
+        use_row.addWidget(QLabel("使用:"))
         self.row_radios: dict[int, QRadioButton] = {}
         for i in (1, 2, 3):
             rb = QRadioButton(f"第{i}行")
@@ -185,71 +471,103 @@ class MainWindow(QMainWindow):
             self.row_radios[i] = rb
             use_row.addWidget(rb)
         use_row.addStretch(1)
-        layout.addLayout(use_row)
+        sv2.addLayout(use_row)
         for i in (1, 2, 3):
-            row = QHBoxLayout()
-            row.addWidget(QLabel(f"        助战第{i}行"), 1)
-            status = QLabel()
-            status.setMinimumWidth(72)
-            status.setAlignment(Qt.AlignCenter)
-            self._slot_status[f"support_row{i}"] = status
-            row.addWidget(status)
-            btn = QPushButton("框选")
-            btn.setFixedWidth(60)
-            btn.clicked.connect(lambda _, k=f"support_row{i}": self.on_record(k))
-            row.addWidget(btn)
-            layout.addLayout(row)
+            sv2.addLayout(self._slot_row(f"support_row{i}", f"助战第{i}行", "运行中可随时切换使用"))
+        v.addWidget(sup_card)
+        v.addStretch(1)
 
+        scroll.setWidget(page)
+        return scroll
+
+    def _slot_row(self, key: str, name: str, desc: str) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        col = QVBoxLayout()
+        col.setSpacing(0)
+        lbl = QLabel(name)
+        lbl.setStyleSheet("font-weight: 600;")
+        sub = QLabel(desc)
+        sub.setObjectName("muted")
+        sub.setStyleSheet(f"font-size: 11px; color: {_T['muted']};")
+        col.addWidget(lbl)
+        col.addWidget(sub)
+        row.addLayout(col, 1)
+        status = QLabel()
+        status.setMinimumWidth(64)
+        status.setAlignment(Qt.AlignCenter)
+        self._slot_status[key] = status
+        row.addWidget(status)
+        btn = QPushButton("框选")
+        btn.setFixedWidth(72)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.clicked.connect(lambda _, k=key: self.on_record(k))
+        row.addWidget(btn)
+        return row
+
+    # ---- 页 3：设置 ----
+    def _build_settings_page(self) -> QWidget:
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(24, 24, 24, 24)
+        v.setSpacing(16)
+
+        head = QLabel("设置")
+        head.setObjectName("sectionTitle")
+        v.addWidget(head)
+
+        rec_card, rv = self._card("识别参数")
         thr_row = QHBoxLayout()
-        thr_row.addWidget(QLabel("识别阈值:"))
+        thr_lbl = QLabel("识别阈值")
+        thr_lbl.setStyleSheet("font-weight: 600;")
         self.threshold_spin = QDoubleSpinBox()
         self.threshold_spin.setRange(0.5, 0.95)
         self.threshold_spin.setSingleStep(0.01)
         self.threshold_spin.setValue(0.80)
+        self.threshold_spin.setFixedWidth(110)
         self.threshold_spin.valueChanged.connect(lambda _: self._save_config())
-        thr_row.addWidget(self.threshold_spin)
-        thr_row.addWidget(QLabel("（误点别的就调高，识别不到就调低）"))
+        thr_row.addWidget(thr_lbl)
         thr_row.addStretch(1)
-        layout.addLayout(thr_row)
+        thr_row.addWidget(self.threshold_spin)
+        rv.addLayout(thr_row)
+        thr_hint = QLabel("误点别的界面就调高；该点的时候没点就调低")
+        thr_hint.setObjectName("muted")
+        rv.addWidget(thr_hint)
 
         hold_row = QHBoxLayout()
-        hold_row.addWidget(QLabel("持续秒数 n:"))
+        hold_lbl = QLabel("持续秒数 n")
+        hold_lbl.setStyleSheet("font-weight: 600;")
         self.hold_spin = QDoubleSpinBox()
         self.hold_spin.setRange(0.0, 10.0)
         self.hold_spin.setSingleStep(0.1)
         self.hold_spin.setValue(1.0)
+        self.hold_spin.setFixedWidth(110)
         self.hold_spin.valueChanged.connect(lambda _: self._save_config())
-        hold_row.addWidget(self.hold_spin)
-        hold_row.addWidget(QLabel("（识别到目标需持续显示 n 秒才点击，防结算动画误触）"))
+        hold_row.addWidget(hold_lbl)
         hold_row.addStretch(1)
-        layout.addLayout(hold_row)
+        hold_row.addWidget(self.hold_spin)
+        rv.addLayout(hold_row)
+        hold_hint = QLabel("目标需在画面上持续显示 n 秒才点击，防结算动画误触")
+        hold_hint.setObjectName("muted")
+        rv.addWidget(hold_hint)
+        v.addWidget(rec_card)
+        v.addStretch(1)
+        return page
 
-        line2 = QFrame()
-        line2.setFrameShape(QFrame.HLine)
-        layout.addWidget(line2)
-
-        # --- 开始 / 结束 ---
-        run_row = QHBoxLayout()
-        self.state_label = QLabel("待机")
-        self.run_btn = QPushButton("▶ 开始")
-        self.run_btn.setMinimumHeight(34)
-        self.run_btn.clicked.connect(self.on_start)
-        self.stop_btn = QPushButton("■ 结束")
-        self.stop_btn.setMinimumHeight(34)
-        self.stop_btn.setEnabled(False)
-        self.stop_btn.clicked.connect(self.on_stop)
-        run_row.addWidget(self.run_btn)
-        run_row.addWidget(self.stop_btn)
-        run_row.addStretch(1)
-        run_row.addWidget(self.state_label)
-        layout.addLayout(run_row)
-
-        # --- 日志 ---
+    # ---- 页 4：日志 ----
+    def _build_log_page(self) -> QWidget:
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(24, 24, 24, 24)
+        v.setSpacing(16)
+        head = QLabel("日志")
+        head.setObjectName("sectionTitle")
+        v.addWidget(head)
         self.log_view = QPlainTextEdit()
+        self.log_view.setObjectName("log")
         self.log_view.setReadOnly(True)
-        layout.addWidget(self.log_view, 1)
-
-        self.setCentralWidget(central)
+        v.addWidget(self.log_view, 1)
+        return page
 
     # ================= 模板录制 =================
     def current_hwnd(self) -> int | None:
@@ -262,7 +580,7 @@ class MainWindow(QMainWindow):
     def _capture_region(self, rect: tuple):
         hwnd = self.current_hwnd()
         if hwnd is None:
-            QMessageBox.warning(self, "提示", "请先在顶部选择模拟器窗口")
+            QMessageBox.warning(self, "提示", "请先在「运行」页选择模拟器窗口")
             return None
         img = crop_screen_rect(hwnd, rect)
         if img is None:
@@ -314,28 +632,34 @@ class MainWindow(QMainWindow):
         return self._load_meta().get("support_rows", {})
 
     def _refresh_template_status(self) -> None:
+        t = _T
         rows = self._support_rows()
-        for key, _ in TEMPLATE_SLOTS:
+        for key, _, _ in TEMPLATE_SLOTS:
             label = self._slot_status[key]
             user = os.path.exists(os.path.join(TEMPLATE_DIR, f"{key}.png"))
             builtin = os.path.exists(os.path.join(TEMPLATE_DIR, "builtin", f"{key}.png"))
             if user:
                 label.setText("自定义")
-                label.setStyleSheet("color: #2e9e44; font-weight: bold;")
+                label.setStyleSheet(f"color: {t['success']}; font-weight: 700;")
             elif builtin:
                 label.setText("内置")
-                label.setStyleSheet("color: #2471a3;")
+                label.setStyleSheet(f"color: {t['builtin']}; font-weight: 700;")
             else:
                 label.setText("未录制")
-                label.setStyleSheet("color: #c0392b;")
+                label.setStyleSheet(f"color: {t['danger']}; font-weight: 700;")
         for i in (1, 2, 3):
             label = self._slot_status[f"support_row{i}"]
             if str(i) in rows:
                 label.setText("已录入")
-                label.setStyleSheet("color: #2e9e44; font-weight: bold;")
+                label.setStyleSheet(f"color: {t['success']}; font-weight: 700;")
             else:
                 label.setText("需录入")
-                label.setStyleSheet("color: #c0392b;")
+                label.setStyleSheet(f"color: {t['danger']}; font-weight: 700;")
+
+    def _set_state(self, text: str, color: str) -> None:
+        self.state_label.setText(text)
+        self.state_label.setStyleSheet(f"font-size: 18px; font-weight: 700; color: {color};")
+        self.state_dot.setStyleSheet(f"color: {color}; font-size: 14px;")
 
     # ================= 开始 / 结束 =================
     def on_start(self) -> None:
@@ -354,7 +678,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self, "缺少助战位置",
                 f"当前选择的「第{use_row}行」尚未框选录入。\n"
-                "请先在「助战第" + str(use_row) + "行」处点「框选」选取整行，"
+                "请先在「模板」页的「助战第" + str(use_row) + "行」处点「框选」选取整行，"
                 "或切换到已录入的行。",
             )
             return
@@ -367,11 +691,19 @@ class MainWindow(QMainWindow):
         )
         self._engine.use_row = use_row
         self._engine.log_signal.connect(self.log)
-        self._engine.state_signal.connect(self.state_label.setText)
+        self._engine.state_signal.connect(self._on_engine_state)
         self._engine.finished_ok.connect(self.on_engine_finished)
         self.run_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
+        self._set_state("运行中", _T["success"])
         self._engine.start()
+
+    def _on_engine_state(self, text: str) -> None:
+        self.state_label.setText(text)
+        self.state_label.setStyleSheet(
+            f"font-size: 15px; font-weight: 700; color: {_T['text']};"
+        )
+        self.state_dot.setStyleSheet(f"color: {_T['primary']}; font-size: 14px;")
 
     def _pick_window_dialog(self) -> int | None:
         """开始时未选窗口则弹窗选择。"""
@@ -394,14 +726,14 @@ class MainWindow(QMainWindow):
     def on_stop(self) -> None:
         if self._engine is not None:
             self._engine.stop()
-            self.state_label.setText("停止中…")
+            self._set_state("停止中…", _T["danger"])
             self.log("[用户] 已请求结束，等待引擎退出…")
 
     def on_engine_finished(self, _ok: bool) -> None:
         self.run_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self._engine = None
-        self.state_label.setText("待机")
+        self._set_state("待机", _T["muted"])
         self.log("[结束] 引擎已退出")
 
     # ================= 窗口 / 日志 =================
