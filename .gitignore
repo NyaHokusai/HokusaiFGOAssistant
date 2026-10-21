@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 打包产物
+build/
+dist/
+*.spec
+
+# 用户本地运行时文件（各自生成，不入库）
+config.json
+assets/templates/meta.json
+assets/templates/*.png
+!assets/templates/builtin/
+!assets/templates/builtin/**
+assets/_icon_work/
+
+# 用户自己的截图素材
+screenshots/
+
+# IDE
+.idea/
+.vscode/
