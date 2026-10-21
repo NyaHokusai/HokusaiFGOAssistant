@@ -2,15 +2,15 @@
 
 <img src="assets/icon.png" width="128" alt="HFA - 葛饰北斋"/>
 
-# HokusaiFGOAssistant (HFA)
+# 北斋FGO助手 · HokusaiFGOAssistant (HFA)
 
-**FGO 连打助手：战斗你来打，结算交给我**
+**FGO 助手：战斗你来打，其余交给我**
 
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
 ![Python](https://img.shields.io/badge/python-3.10%2B-green)
 ![License](https://img.shields.io/badge/license-MIT-orange)
 
-纯本地运行的 FGO（Fate/Grand Order）连打辅助工具：**战斗本体由玩家手动打**，
+纯本地运行的 FGO（Fate/Grand Order）辅助工具：**战斗本体由玩家手动打**，
 每局结束后程序自动接管结算流程并进入下一把。纯屏幕截图 + 模拟点击，
 不读取内存、不修改游戏数据、不发包。
 

@@ -60,7 +60,7 @@ TEMPLATE_SLOTS = [
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("HokusaiFGOAssistant (HFA)")
+        self.setWindowTitle("北斋FGO助手 HokusaiFGOAssistant (HFA)")
         icon_png = os.path.normpath(os.path.join(TEMPLATE_DIR, "..", "icon.png"))
         if os.path.exists(icon_png):
             self.setWindowIcon(QIcon(icon_png))
