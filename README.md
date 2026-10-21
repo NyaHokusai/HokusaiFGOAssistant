@@ -4,8 +4,6 @@
 
 # 北斋FGO助手 · HokusaiFGOAssistant (HFA)
 
-**FGO 助手：战斗你来打，其余交给我**
-
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
 ![Python](https://img.shields.io/badge/python-3.10%2B-green)
 ![License](https://img.shields.io/badge/license-MIT-orange)
