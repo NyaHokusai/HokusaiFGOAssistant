@@ -17,7 +17,7 @@ import time
 
 import cv2
 from PySide6.QtCore import QRect, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QColor, QIcon, QKeySequence, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QApplication,
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFrame,
     QHBoxLayout,
+    QKeySequenceEdit,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -43,6 +44,7 @@ from . import __version__
 from .capture import crop_screen_rect, get_client_rect_on_screen, list_windows
 from .fgo_engine import FgoEngine
 from .friend_engine import FriendEngine
+from .hotkeys import HotkeyManager
 from .region_selector import RegionSelector
 
 if getattr(sys, "frozen", False):  # PyInstaller 打包后，资源放 exe 旁边，方便用户修改
@@ -51,7 +53,8 @@ else:
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATE_DIR = os.path.join(BASE_DIR, "assets", "templates")
 META_PATH = os.path.join(TEMPLATE_DIR, "meta.json")
-FONT_STACK = "'HarmonyOS Sans SC', 'HarmonyOS Sans', 'Microsoft YaHei UI'"
+FONT_STACK = ("'HarmonyOS Sans SC Light', 'HarmonyOS Sans Light', "
+              "'HarmonyOS Sans SC', 'HarmonyOS Sans', 'Microsoft YaHei UI'")
 
 # (key, 名称, 说明)；助战行位置单独处理
 TEMPLATE_SLOTS = [
@@ -238,11 +241,11 @@ def build_stylesheet() -> str:
     }}
     QPushButton#ghost:hover {{ color: {t['text']}; background: rgba(255,255,255,0.06); }}
 
-    QComboBox, QDoubleSpinBox {{
+    QComboBox, QDoubleSpinBox, QKeySequenceEdit {{
         background: {t['fill']}; border: none;
         border-radius: 10px; min-height: 36px; padding: 0 10px; color: {t['text']};
     }}
-    QComboBox:hover, QDoubleSpinBox:hover {{ background: rgba(120, 120, 128, 0.32); }}
+    QComboBox:hover, QDoubleSpinBox:hover, QKeySequenceEdit:hover {{ background: rgba(120, 120, 128, 0.32); }}
     QComboBox::drop-down {{ border: none; width: 26px; }}
     QComboBox QAbstractItemView {{
         background: #1C1C2E; border: 1px solid {t['sep']};
@@ -305,6 +308,10 @@ class MainWindow(QMainWindow):
 
         self.setStyleSheet(build_stylesheet())
         self._build_ui()
+        # 全局快捷键（RegisterHotKey，切出窗口也能控制）
+        self._hotkeys = HotkeyManager(self._on_hotkey)
+        QApplication.instance().installNativeEventFilter(self._hotkeys)
+        self._register_hotkeys_from_config()
         self._apply_config()
         self.refresh_windows()
         self._restore_window_selection()
@@ -393,6 +400,14 @@ class MainWindow(QMainWindow):
             "threshold": self.threshold_spin.value(),
             "hold_seconds": self.hold_spin.value(),
             "use_row": self._current_use_row(),
+            "hotkey_auto": (
+                self._hk_edits[1].keySequence().toString()
+                if hasattr(self, "_hk_edits") else ""
+            ),
+            "hotkey_friend": (
+                self._hk_edits[2].keySequence().toString()
+                if hasattr(self, "_hk_edits") else ""
+            ),
         }
         try:
             with open(self._cfg_path, "w", encoding="utf-8") as f:
@@ -832,8 +847,86 @@ class MainWindow(QMainWindow):
         hold_hint.setObjectName("hint")
         rv.addWidget(hold_hint)
         v.addWidget(rec_card)
+
+        # 快捷键卡
+        hk_card, hkv = self._card("快捷键")
+        hk_hint = QLabel("点击输入框后直接按键；全局生效，切到游戏窗口也能开始/结束")
+        hk_hint.setObjectName("hint")
+        hkv.addWidget(hk_hint)
+        self._hk_edits: dict[int, QKeySequenceEdit] = {}
+        self._hk_prev: dict[int, str] = {}
+        defaults = {1: "F5", 2: "F6"}
+        names = {1: "自动结算", 2: "友情召唤"}
+        for hid in (1, 2):
+            init = self._cfg.get(
+                "hotkey_auto" if hid == 1 else "hotkey_friend", "") or defaults[hid]
+            row = QHBoxLayout()
+            lbl = QLabel(f"{names[hid]} 开始/结束")
+            lbl.setStyleSheet("font-weight: 600;")
+            edit = QKeySequenceEdit(QKeySequence(init))
+            edit.setFixedWidth(150)
+            self._hk_edits[hid] = edit
+            self._hk_prev[hid] = init
+            edit.keySequenceChanged.connect(
+                lambda _, h=hid: self._on_hotkey_changed(h))
+            row.addWidget(lbl)
+            row.addStretch(1)
+            row.addWidget(edit)
+            hkv.addLayout(row)
+        v.addWidget(hk_card)
         v.addStretch(1)
         return page
+
+    # ---- 快捷键 ----
+    def _register_hotkeys_from_config(self) -> None:
+        names = {1: "自动结算", 2: "友情召唤"}
+        for hid in (1, 2):
+            text = self._cfg.get(
+                "hotkey_auto" if hid == 1 else "hotkey_friend", ""
+            ) or ("F5" if hid == 1 else "F6")
+            if self._hotkeys.register(hid, text):
+                self.log(f"[快捷键] {names[hid]} 开始/结束 → {text}")
+            else:
+                self.log(f"[快捷键] {names[hid]} 的 {text} 注册失败（可能被占用），可在设置里改")
+
+    def _on_hotkey_changed(self, hid: int) -> None:
+        edit = self._hk_edits[hid]
+        text = edit.keySequence().toString()
+        names = {1: "自动结算", 2: "友情召唤"}
+        other = 2 if hid == 1 else 1
+        if text and text == self._hk_edits[other].keySequence().toString():
+            QMessageBox.warning(self, "快捷键冲突", "两个功能的快捷键不能相同")
+            edit.blockSignals(True)
+            edit.setKeySequence(QKeySequence(self._hk_prev[hid]))
+            edit.blockSignals(False)
+            return
+        if text:
+            if not self._hotkeys.register(hid, text):
+                QMessageBox.warning(
+                    self, "注册失败", f"{text} 可能被其他程序占用，换一个键试试")
+                edit.blockSignals(True)
+                edit.setKeySequence(QKeySequence(self._hk_prev[hid]))
+                edit.blockSignals(False)
+                return
+            self.log(f"[快捷键] {names[hid]} → {text}")
+        else:
+            self._hotkeys.unregister(hid)
+            self.log(f"[快捷键] {names[hid]} 已清除")
+        self._hk_prev[hid] = text
+        self._save_config()
+
+    def _on_hotkey(self, hid: int) -> None:
+        """热键按下：在开始/结束之间切换。"""
+        if hid == 1:
+            if self._engine is None:
+                self.on_start()
+            else:
+                self.on_stop()
+        elif hid == 2:
+            if self._friend_engine is None:
+                self.on_friend_start()
+            else:
+                self.on_friend_stop()
 
     # ---- 页 2：日志 ----
     def _build_log_page(self) -> QWidget:
@@ -1207,6 +1300,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self._save_config()
+        if hasattr(self, "_hotkeys"):
+            self._hotkeys.unregister_all()
         if self._engine is not None:
             self._engine.stop()
             self._engine.wait(2000)

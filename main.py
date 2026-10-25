@@ -30,7 +30,11 @@ def main() -> None:
 
     app = QApplication(sys.argv)
     font = QFont()
-    font.setFamilies(["HarmonyOS Sans SC", "HarmonyOS Sans", "Microsoft YaHei UI"])
+    # 优先 HarmonyOS Sans 自带的 Light 细体，没装则回退常规体
+    font.setFamilies([
+        "HarmonyOS Sans SC Light", "HarmonyOS Sans Light",
+        "HarmonyOS Sans SC", "HarmonyOS Sans", "Microsoft YaHei UI",
+    ])
     font.setPointSize(10)
     app.setFont(font)
     window = MainWindow()
