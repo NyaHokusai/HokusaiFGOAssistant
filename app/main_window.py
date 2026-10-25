@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
 from . import __version__
 from .capture import crop_screen_rect, get_client_rect_on_screen, list_windows
 from .fgo_engine import FgoEngine
+from .friend_engine import FriendEngine
 from .region_selector import RegionSelector
 
 if getattr(sys, "frozen", False):  # PyInstaller 打包后，资源放 exe 旁边，方便用户修改
@@ -62,6 +63,15 @@ TEMPLATE_SLOTS = [
     ("confirm", "「决定」按钮", "补体力确认弹窗（可选）"),
     ("support_title", "「助战选择」标题", "识别助战界面"),
 ]
+
+# 友情召唤页模板槽位（friend_x100 位置单独录入，见 on_record）
+FRIEND_SLOTS = [
+    ("friend_summon", "「友情点召唤」画面", "识别到后点「召唤 x100」位置"),
+    ("friend_confirm", "「决定」弹窗按钮", "x100 与 继续召唤 共用"),
+    ("friend_continue", "「继续进行100次召唤」", "点击进入下一轮循环"),
+    ("friend_stop", "停止用素材图", "出现即自动停止（可选）"),
+]
+FRIEND_REQUIRED = ("friend_summon", "friend_confirm", "friend_continue")
 
 # ============ 主题 token（Apple HIG 暗色 + 品牌紫） ============
 _T = {
@@ -96,6 +106,7 @@ _ICON_PATHS = {
     "close": '<line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/>',
     "collapse": '<polyline points="15 6 9 12 15 18"/>',
     "expand": '<polyline points="9 6 15 12 9 18"/>',
+    "repeat": '<polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>',
 }
 
 
@@ -285,6 +296,7 @@ class MainWindow(QMainWindow):
 
         os.makedirs(TEMPLATE_DIR, exist_ok=True)
         self._engine: FgoEngine | None = None
+        self._friend_engine: FriendEngine | None = None
         self._cfg_path = os.path.join(BASE_DIR, "config.json")
         self._cfg = self._load_config()
         self._drag_pos = None
@@ -376,6 +388,7 @@ class MainWindow(QMainWindow):
     def _save_config(self) -> None:
         cfg = {
             "window_title": self.win_combo.currentText(),
+            "friend_window_title": self.friend_combo.currentText(),
             "threshold": self.threshold_spin.value(),
             "hold_seconds": self.hold_spin.value(),
             "use_row": self._current_use_row(),
@@ -400,6 +413,11 @@ class MainWindow(QMainWindow):
             idx = self.win_combo.findText(title)
             if idx >= 0:
                 self.win_combo.setCurrentIndex(idx)
+        ftitle = self._cfg.get("friend_window_title", "")
+        if ftitle:
+            idx = self.friend_combo.findText(ftitle)
+            if idx >= 0:
+                self.friend_combo.setCurrentIndex(idx)
 
     def _current_use_row(self) -> int:
         for i, rb in self.row_radios.items():
@@ -440,9 +458,10 @@ class MainWindow(QMainWindow):
         body.setSpacing(0)
         body.addWidget(self._build_sidebar())
         self._pages = QStackedWidget()
-        self._pages.addWidget(self._build_main_page())   # 0 自动结算（运行+模板）
+        self._pages.addWidget(self._build_main_page())    # 0 自动结算（运行+模板）
         self._pages.addWidget(self._build_settings_page())  # 1 设置
         self._pages.addWidget(self._build_log_page())       # 2 日志
+        self._pages.addWidget(self._build_friend_page())  # 3 友情召唤
         body.addWidget(self._pages, 1)
         rl.addLayout(body, 1)
         self.setCentralWidget(root)
@@ -571,19 +590,21 @@ class MainWindow(QMainWindow):
         sv.addSpacing(4)
 
         self._nav_buttons: dict[int, QPushButton] = {}
-        self._nav_text: dict[int, str] = {}
-        # 顶部只放主功能
-        self._nav_text[0] = "自动结算"
-        self._nav_buttons[0] = self._make_nav_btn(sv, 0, "自动结算", "play")
+        self._nav_text: dict[int, str] = {
+            0: "自动结算", 1: "设置", 2: "日志", 3: "友情召唤",
+        }
+        # 顶部：主功能（idx 与页面索引一致）
+        for idx, icon in ((0, "play"), (3, "repeat")):
+            self._nav_buttons[idx] = self._make_nav_btn(
+                sv, idx, self._nav_text[idx], icon)
         self._nav_buttons[0].setChecked(True)
 
         sv.addStretch(1)
 
         # 底部：设置 / 日志 + 版本号
-        self._nav_text[1] = "设置"
-        self._nav_buttons[1] = self._make_nav_btn(sv, 1, "设置", "settings")
-        self._nav_text[2] = "日志"
-        self._nav_buttons[2] = self._make_nav_btn(sv, 2, "日志", "log")
+        for idx, icon in ((1, "settings"), (2, "log")):
+            self._nav_buttons[idx] = self._make_nav_btn(
+                sv, idx, self._nav_text[idx], icon)
         sv.addSpacing(8)
         self._ver_label = QLabel(f"v{__version__}")
         self._ver_label.setObjectName("caption")
@@ -828,6 +849,185 @@ class MainWindow(QMainWindow):
         v.addWidget(self.log_view, 1)
         return page
 
+    # ---- 页 3：友情召唤 ----
+    def _build_friend_page(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(26, 22, 26, 26)
+        v.setSpacing(16)
+
+        # 英雄卡：运行控制
+        hero, hv = self._card()
+        hv.setSpacing(12)
+        top = QHBoxLayout()
+        top.setSpacing(14)
+        tile = QFrame()
+        tile.setObjectName("iconTile")
+        tile.setFixedSize(46, 46)
+        tile_lay = QVBoxLayout(tile)
+        tile_lay.setContentsMargins(0, 0, 0, 0)
+        tile_icon = QLabel()
+        tile_icon.setPixmap(svg_icon("repeat", _T["primary"], 22).pixmap(22, 22))
+        tile_icon.setAlignment(Qt.AlignCenter)
+        tile_lay.addWidget(tile_icon)
+        top.addWidget(tile)
+        top.addSpacing(2)
+
+        title_col = QVBoxLayout()
+        title_col.setSpacing(2)
+        t = QLabel("友情召唤")
+        t.setStyleSheet("font-size: 17px; font-weight: 700;")
+        self.friend_state_label = QLabel("待机")
+        self.friend_state_label.setStyleSheet(
+            f"font-size: 12px; font-weight: 600; color: {_T['label2']};")
+        title_col.addWidget(t)
+        title_col.addWidget(self.friend_state_label)
+        top.addLayout(title_col, 1)
+        hv.addLayout(top)
+
+        ctl = QHBoxLayout()
+        ctl.setSpacing(8)
+        self.friend_combo = QComboBox()
+        self.friend_combo.setMinimumWidth(220)
+        self.friend_combo.currentTextChanged.connect(lambda _: self._save_config())
+        ctl.addWidget(self.friend_combo, 1)
+        frefresh_btn = QPushButton()
+        frefresh_btn.setObjectName("ghost")
+        frefresh_btn.setIcon(svg_icon("refresh", _T["icon"], 15))
+        frefresh_btn.setFixedWidth(38)
+        frefresh_btn.setToolTip("刷新窗口列表")
+        frefresh_btn.clicked.connect(self.refresh_friend_windows)
+        ctl.addWidget(frefresh_btn)
+        self.friend_run_btn = QPushButton("开始")
+        self.friend_run_btn.setObjectName("primary")
+        self.friend_run_btn.setIcon(svg_icon("play", "#FFFFFF", 14))
+        self.friend_run_btn.setMinimumWidth(120)
+        self.friend_run_btn.setCursor(Qt.PointingHandCursor)
+        self.friend_run_btn.clicked.connect(self.on_friend_start)
+        self.friend_stop_btn = QPushButton("结束")
+        self.friend_stop_btn.setObjectName("danger")
+        self.friend_stop_btn.setMinimumWidth(100)
+        self.friend_stop_btn.setEnabled(False)
+        self.friend_stop_btn.setCursor(Qt.PointingHandCursor)
+        self.friend_stop_btn.clicked.connect(self.on_friend_stop)
+        ctl.addWidget(self.friend_run_btn)
+        ctl.addWidget(self.friend_stop_btn)
+        hv.addLayout(ctl)
+        v.addWidget(hero)
+
+        # 模板卡
+        tpl_card, tv = self._card("召唤模板")
+        tpl_hint = QLabel("先手动进入友情点召唤界面再点「开始」；循环中可随时点「结束」")
+        tpl_hint.setObjectName("hint")
+        tv.addWidget(tpl_hint)
+        for key, name, desc in FRIEND_SLOTS:
+            tv.addLayout(self._slot_row(key, name, desc))
+
+        # 召唤 x100 位置（录入比例坐标，同助战行）
+        x100_row = QHBoxLayout()
+        x100_row.setSpacing(10)
+        xcol = QVBoxLayout()
+        xcol.setSpacing(0)
+        xlbl = QLabel("「召唤 x100」按钮")
+        xlbl.setStyleSheet("font-weight: 600;")
+        xsub = QLabel("框选按钮，点击其中心")
+        xsub.setObjectName("hint")
+        xcol.addWidget(xlbl)
+        xcol.addWidget(xsub)
+        x100_row.addLayout(xcol, 1)
+        xstatus = QLabel()
+        xstatus.setMinimumWidth(56)
+        xstatus.setAlignment(Qt.AlignCenter)
+        self._slot_status["friend_x100"] = xstatus
+        x100_row.addWidget(xstatus)
+        xbtn = QPushButton(svg_icon("crop", _T["icon"], 14), "框选")
+        xbtn.setFixedWidth(84)
+        xbtn.setCursor(Qt.PointingHandCursor)
+        xbtn.clicked.connect(lambda _: self.on_record("friend_x100"))
+        x100_row.addWidget(xbtn)
+        tv.addLayout(x100_row)
+        v.addWidget(tpl_card)
+        v.addStretch(1)
+        scroll.setWidget(page)
+        return scroll
+
+    # ---- 友情召唤：启停 ----
+    def on_friend_start(self) -> None:  # noqa: N802
+        hwnd = self.friend_combo.currentData()
+        if hwnd is None:
+            self.refresh_friend_windows()
+            hwnd = self.friend_combo.currentData()
+        if hwnd is None:
+            QMessageBox.warning(self, "提示", "请先选择 FGO 所在的模拟器窗口")
+            return
+
+        def tpl_ready(key: str) -> bool:
+            return (
+                os.path.exists(os.path.join(TEMPLATE_DIR, f"{key}.png"))
+                or os.path.exists(os.path.join(TEMPLATE_DIR, "builtin", f"{key}.png"))
+            )
+
+        labels = {k: n for k, n, _ in FRIEND_SLOTS}
+        missing = [labels[k] for k in FRIEND_REQUIRED if not tpl_ready(k)]
+        x100 = self._load_meta().get("friend_x100") or {}
+        if not (isinstance(x100, dict) and "rx" in x100 and "ry" in x100):
+            missing.append("「召唤 x100」位置")
+        if missing:
+            QMessageBox.warning(
+                self, "缺少模板/位置",
+                "以下内容尚未录制，请先在下方框选：\n· " + "\n· ".join(missing))
+            return
+        if not tpl_ready("friend_stop"):
+            self.log("[友情召唤] 提示：未设置停止素材图，将一直循环直到手动「结束」")
+
+        self.log(f"[友情召唤启动] 目标窗口: {self.friend_combo.currentText()}")
+        self._friend_engine = FriendEngine(
+            hwnd, TEMPLATE_DIR, threshold=self.threshold_spin.value())
+        self._friend_engine.log_signal.connect(self.log)
+        self._friend_engine.state_signal.connect(self._on_friend_state)
+        self._friend_engine.finished_ok.connect(self.on_friend_finished)
+        self.friend_run_btn.setEnabled(False)
+        self.friend_stop_btn.setEnabled(True)
+        self._set_friend_state("运行中", _T["success"])
+        self._friend_engine.start()
+
+    def on_friend_stop(self) -> None:  # noqa: N802
+        if self._friend_engine is not None:
+            self._friend_engine.stop()
+            self._set_friend_state("停止中…", _T["danger"])
+            self.log("[用户] 已请求结束友情召唤…")
+
+    def _on_friend_state(self, text: str) -> None:
+        self.friend_state_label.setText(text)
+        self.friend_state_label.setStyleSheet(
+            f"font-size: 12px; font-weight: 700; color: {_T['text']};"
+        )
+
+    def on_friend_finished(self, _ok: bool) -> None:
+        self.friend_run_btn.setEnabled(True)
+        self.friend_stop_btn.setEnabled(False)
+        self._friend_engine = None
+        self._set_friend_state("待机", _T["label2"])
+        self.log("[结束] 友情召唤引擎已退出")
+
+    def _set_friend_state(self, text: str, color: str) -> None:
+        self.friend_state_label.setText(text)
+        self.friend_state_label.setStyleSheet(
+            f"font-size: 12px; font-weight: 700; color: {color};"
+        )
+
+    def refresh_friend_windows(self) -> None:
+        cur = self.friend_combo.currentData()
+        self.friend_combo.clear()
+        for hwnd, title in list_windows():
+            self.friend_combo.addItem(title, hwnd)
+        if cur is not None:
+            idx = self.friend_combo.findData(cur)
+            if idx >= 0:
+                self.friend_combo.setCurrentIndex(idx)
+
     # ================= 模板录制 =================
     def current_hwnd(self) -> int | None:
         return self.win_combo.currentData()
@@ -836,8 +1036,9 @@ class MainWindow(QMainWindow):
         """弹出框选（覆盖所有显示器），返回物理像素矩形 (x1,y1,x2,y2)；取消返回 None。"""
         return RegionSelector.select_region()
 
-    def _capture_region(self, rect: tuple):
-        hwnd = self.current_hwnd()
+    def _capture_region(self, rect: tuple, hwnd: int | None = None):
+        if hwnd is None:
+            hwnd = self.current_hwnd()
         if hwnd is None:
             QMessageBox.warning(self, "提示", "请先在英雄卡选择模拟器窗口")
             return None
@@ -852,7 +1053,10 @@ class MainWindow(QMainWindow):
         rect = self._pick_region()
         if rect is None:
             return
-        img = self._capture_region(rect)
+        rec_hwnd = (
+            self.friend_combo.currentData() if key.startswith("friend") else None
+        )
+        img = self._capture_region(rect, rec_hwnd)
         if img is None:
             return
         if key.startswith("support_row"):
@@ -868,6 +1072,21 @@ class MainWindow(QMainWindow):
             with open(META_PATH, "w", encoding="utf-8") as f:
                 json.dump(meta, f, ensure_ascii=False, indent=2)
             self.log(f"助战第 {row} 行点击位置已保存: 比例坐标 ({rx}, {ry})")
+        elif key == "friend_x100":
+            # 只记录点击位置（相对窗口客户区的比例坐标）
+            hwnd = self.friend_combo.currentData() or self.current_hwnd()
+            if hwnd is None:
+                QMessageBox.warning(self, "提示", "请先在页面顶部选择模拟器窗口")
+                return
+            wl, wt, wr, wb = get_client_rect_on_screen(hwnd)
+            width, height = max(1, wr - wl), max(1, wb - wt)
+            rx = round(((rect[0] + rect[2]) / 2 - wl) / width, 4)
+            ry = round(((rect[1] + rect[3]) / 2 - wt) / height, 4)
+            meta = self._load_meta()
+            meta["friend_x100"] = {"rx": rx, "ry": ry}
+            with open(META_PATH, "w", encoding="utf-8") as f:
+                json.dump(meta, f, ensure_ascii=False, indent=2)
+            self.log(f"「召唤 x100」点击位置已保存: 比例坐标 ({rx}, {ry})")
         else:
             path = os.path.join(TEMPLATE_DIR, f"{key}.png")
             cv2.imwrite(path, img)
@@ -914,6 +1133,28 @@ class MainWindow(QMainWindow):
             else:
                 label.setText("需录入")
                 label.setStyleSheet(f"color: {t['danger']}; font-weight: 700;")
+        # 友情召唤槽位
+        for key, _, _ in FRIEND_SLOTS:
+            label = self._slot_status[key]
+            user = os.path.exists(os.path.join(TEMPLATE_DIR, f"{key}.png"))
+            builtin = os.path.exists(os.path.join(TEMPLATE_DIR, "builtin", f"{key}.png"))
+            if user:
+                label.setText("自定义")
+                label.setStyleSheet(f"color: {t['success']}; font-weight: 700;")
+            elif builtin:
+                label.setText("内置")
+                label.setStyleSheet(f"color: {t['builtin']}; font-weight: 700;")
+            else:
+                label.setText("未录制")
+                label.setStyleSheet(f"color: {t['danger']}; font-weight: 700;")
+        x100 = self._load_meta().get("friend_x100") or {}
+        label = self._slot_status["friend_x100"]
+        if isinstance(x100, dict) and "rx" in x100:
+            label.setText("已录入")
+            label.setStyleSheet(f"color: {t['success']}; font-weight: 700;")
+        else:
+            label.setText("需录入")
+            label.setStyleSheet(f"color: {t['danger']}; font-weight: 700;")
 
     def _set_state(self, text: str, color: str) -> None:
         self.state_label.setText(text)
@@ -1014,4 +1255,7 @@ class MainWindow(QMainWindow):
         if self._engine is not None:
             self._engine.stop()
             self._engine.wait(2000)
+        if self._friend_engine is not None:
+            self._friend_engine.stop()
+            self._friend_engine.wait(2000)
         super().closeEvent(event)
