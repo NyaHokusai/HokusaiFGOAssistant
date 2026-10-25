@@ -64,9 +64,10 @@ TEMPLATE_SLOTS = [
     ("support_title", "「助战选择」标题", "识别助战界面"),
 ]
 
-# 友情召唤页模板槽位（friend_x100 位置单独录入，见 on_record）
+# 友情召唤页模板槽位（内置模板已随包提供，框选可覆盖）
 FRIEND_SLOTS = [
-    ("friend_summon", "「友情点召唤」画面", "识别到后点「召唤 x100」位置"),
+    ("friend_summon", "「友情点召唤」画面", "识别到后点「召唤 x100」"),
+    ("friend_x100", "「召唤 x100」按钮", "点击其识别位置"),
     ("friend_confirm", "「决定」弹窗按钮", "x100 与 继续召唤 共用"),
     ("friend_continue", "「继续进行100次召唤」", "点击进入下一轮循环"),
     ("friend_stop", "停止用素材图", "出现即自动停止（可选）"),
@@ -924,30 +925,6 @@ class MainWindow(QMainWindow):
         tv.addWidget(tpl_hint)
         for key, name, desc in FRIEND_SLOTS:
             tv.addLayout(self._slot_row(key, name, desc))
-
-        # 召唤 x100 位置（录入比例坐标，同助战行）
-        x100_row = QHBoxLayout()
-        x100_row.setSpacing(10)
-        xcol = QVBoxLayout()
-        xcol.setSpacing(0)
-        xlbl = QLabel("「召唤 x100」按钮")
-        xlbl.setStyleSheet("font-weight: 600;")
-        xsub = QLabel("框选按钮，点击其中心")
-        xsub.setObjectName("hint")
-        xcol.addWidget(xlbl)
-        xcol.addWidget(xsub)
-        x100_row.addLayout(xcol, 1)
-        xstatus = QLabel()
-        xstatus.setMinimumWidth(56)
-        xstatus.setAlignment(Qt.AlignCenter)
-        self._slot_status["friend_x100"] = xstatus
-        x100_row.addWidget(xstatus)
-        xbtn = QPushButton(svg_icon("crop", _T["icon"], 14), "框选")
-        xbtn.setFixedWidth(84)
-        xbtn.setCursor(Qt.PointingHandCursor)
-        xbtn.clicked.connect(lambda _: self.on_record("friend_x100"))
-        x100_row.addWidget(xbtn)
-        tv.addLayout(x100_row)
         v.addWidget(tpl_card)
         v.addStretch(1)
         scroll.setWidget(page)
@@ -972,8 +949,9 @@ class MainWindow(QMainWindow):
         labels = {k: n for k, n, _ in FRIEND_SLOTS}
         missing = [labels[k] for k in FRIEND_REQUIRED if not tpl_ready(k)]
         x100 = self._load_meta().get("friend_x100") or {}
-        if not (isinstance(x100, dict) and "rx" in x100 and "ry" in x100):
-            missing.append("「召唤 x100」位置")
+        if not tpl_ready("friend_x100") and \
+                not (isinstance(x100, dict) and "rx" in x100 and "ry" in x100):
+            missing.append("「召唤 x100」按钮")
         if missing:
             QMessageBox.warning(
                 self, "缺少模板/位置",
@@ -1072,21 +1050,6 @@ class MainWindow(QMainWindow):
             with open(META_PATH, "w", encoding="utf-8") as f:
                 json.dump(meta, f, ensure_ascii=False, indent=2)
             self.log(f"助战第 {row} 行点击位置已保存: 比例坐标 ({rx}, {ry})")
-        elif key == "friend_x100":
-            # 只记录点击位置（相对窗口客户区的比例坐标）
-            hwnd = self.friend_combo.currentData() or self.current_hwnd()
-            if hwnd is None:
-                QMessageBox.warning(self, "提示", "请先在页面顶部选择模拟器窗口")
-                return
-            wl, wt, wr, wb = get_client_rect_on_screen(hwnd)
-            width, height = max(1, wr - wl), max(1, wb - wt)
-            rx = round(((rect[0] + rect[2]) / 2 - wl) / width, 4)
-            ry = round(((rect[1] + rect[3]) / 2 - wt) / height, 4)
-            meta = self._load_meta()
-            meta["friend_x100"] = {"rx": rx, "ry": ry}
-            with open(META_PATH, "w", encoding="utf-8") as f:
-                json.dump(meta, f, ensure_ascii=False, indent=2)
-            self.log(f"「召唤 x100」点击位置已保存: 比例坐标 ({rx}, {ry})")
         else:
             path = os.path.join(TEMPLATE_DIR, f"{key}.png")
             cv2.imwrite(path, img)
@@ -1147,14 +1110,6 @@ class MainWindow(QMainWindow):
             else:
                 label.setText("未录制")
                 label.setStyleSheet(f"color: {t['danger']}; font-weight: 700;")
-        x100 = self._load_meta().get("friend_x100") or {}
-        label = self._slot_status["friend_x100"]
-        if isinstance(x100, dict) and "rx" in x100:
-            label.setText("已录入")
-            label.setStyleSheet(f"color: {t['success']}; font-weight: 700;")
-        else:
-            label.setText("需录入")
-            label.setStyleSheet(f"color: {t['danger']}; font-weight: 700;")
 
     def _set_state(self, text: str, color: str) -> None:
         self.state_label.setText(text)

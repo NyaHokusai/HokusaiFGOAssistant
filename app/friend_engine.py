@@ -26,6 +26,7 @@ from .recognizer import find_template, load_template
 
 FRIEND_LABELS = {
     "friend_summon": "友情点召唤",
+    "friend_x100": "召唤 x100",
     "friend_confirm": "决定",
     "friend_continue": "继续进行100次召唤",
     "friend_stop": "停止素材",
@@ -107,8 +108,8 @@ class FriendEngine(QThread):
                 self._x100_point = None
         loaded = "、".join(FRIEND_LABELS[k] for k in FRIEND_LABELS if k in self._templates)
         self.log_signal.emit(f"[启动] 已加载模板: {loaded or '无'}")
-        if self._x100_point is None:
-            self.log_signal.emit("[警告] 未录入「召唤 x100」位置，无法执行召唤步骤")
+        if "friend_x100" not in self._templates and self._x100_point is None:
+            self.log_signal.emit("[警告] 「召唤 x100」模板与位置都没有，无法执行召唤步骤")
         if "friend_stop" not in self._templates:
             self.log_signal.emit("[提示] 未设置停止素材图，循环将一直进行直到手动结束")
 
@@ -159,7 +160,7 @@ class FriendEngine(QThread):
     # ---------- 状态处理 ----------
     def _step_summon(self, img, now: float) -> None:
         tpl = self._templates.get("friend_summon")
-        if tpl is None or self._x100_point is None:
+        if tpl is None:
             return  # start 时已校验，双保险
         hit = find_template(img, tpl, self._threshold)
         if hit is None:
@@ -172,12 +173,28 @@ class FriendEngine(QThread):
         if now - self._last_click < CLICK_GAP:
             return
         wl, wt, wr, wb = get_client_rect_on_screen(self._hwnd)
-        cx, cy = rel_to_abs(self._x100_point[0], self._x100_point[1], (wl, wt, wr, wb))
+        # 点击目标：优先「召唤 x100」模板识别位置；没有模板再用录入的点击位置
+        x100_tpl = self._templates.get("friend_x100")
+        x100_hit = (
+            find_template(img, x100_tpl, self._threshold)
+            if x100_tpl is not None else None
+        )
+        if x100_hit is not None:
+            x, y, w, h, score = x100_hit
+            cx, cy = wl + x + w // 2, wt + y + h // 2
+            pos = f"「召唤 x100」识别位置（得分 {score:.2f}）"
+        elif self._x100_point is not None:
+            cx, cy = rel_to_abs(
+                self._x100_point[0], self._x100_point[1], (wl, wt, wr, wb))
+            pos = "录入的召唤位置"
+        else:
+            self.log_signal.emit("[警告] 找不到「召唤 x100」按钮且未录入位置，本轮跳过")
+            return
         click_at(cx, cy)
         self._last_click = now
         self._state = S_WAIT_CONFIRM
         self._skip_next = "skip"
-        msg = "识别到「友情点召唤」→ 已点「召唤 x100」，等待「决定」弹窗…"
+        msg = f"识别到「友情点召唤」→ 已点{pos}，等待「决定」弹窗…"
         self.log_signal.emit(msg)
         self.state_signal.emit(msg)
 
