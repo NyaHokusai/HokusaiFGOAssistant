@@ -94,6 +94,8 @@ _ICON_PATHS = {
     "max": '<rect x="5" y="5" width="14" height="14" rx="2"/>',
     "restore": '<rect x="4" y="8" width="12" height="12" rx="2"/><polyline points="8 4 18 4 18 14"/>',
     "close": '<line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/>',
+    "collapse": '<polyline points="15 6 9 12 15 18"/>',
+    "expand": '<polyline points="9 6 15 12 9 18"/>',
 }
 
 
@@ -130,7 +132,11 @@ def build_stylesheet() -> str:
     QLabel#caption {{ color: {t['label3']}; font-size: 10px; letter-spacing: 2px; }}
 
     /* ---------- 侧边栏 ---------- */
-    #sidebar {{ background: {t['sidebar']}; border-right: 1px solid {t['sep']}; }}
+    #sidebar {{
+        background: rgba(255, 255, 255, 0.035);
+        border: 1px solid {t['sep']};
+        border-radius: 16px;
+    }}
     QLabel#appTitle {{ font-size: 15px; font-weight: 700; }}
     QLabel#appSub {{ font-size: 9px; color: {t['label3']}; letter-spacing: 3px; }}
     QPushButton#nav {{
@@ -210,10 +216,13 @@ def build_stylesheet() -> str:
 
     QRadioButton {{ spacing: 6px; }}
     QRadioButton::indicator {{
-        width: 16px; height: 16px; border-radius: 8px;
-        border: 2px solid {t['label2']}; background: transparent;
+        width: 14px; height: 14px; border-radius: 7px;
+        border: 1px solid {t['label2']}; background: transparent;
     }}
-    QRadioButton::indicator:checked {{ border: 5px solid {t['primary']}; background: white; }}
+    QRadioButton::indicator:hover {{ border-color: {t['primary']}; }}
+    QRadioButton::indicator:checked {{
+        border: 4px solid {t['primary']}; background: white;
+    }}
 
     QPlainTextEdit#log {{
         background: {t['glass']}; border: 1px solid {t['sep']};
@@ -383,11 +392,8 @@ class MainWindow(QMainWindow):
     def _card(title: str | None = None) -> tuple[QFrame, QVBoxLayout]:
         card = QFrame()
         card.setObjectName("card")
-        shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(20)
-        shadow.setOffset(0, 4)
-        shadow.setColor(QColor(0, 0, 0, 60))
-        card.setGraphicsEffect(shadow)
+        # 注意：不要给卡片加 QGraphicsDropShadowEffect —— 它会把整个组件
+        # 拉进位图渲染路径，导致卡片内所有文字发虚。分层感靠边线和底色。
         v = QVBoxLayout(card)
         v.setContentsMargins(20, 18, 20, 18)
         v.setSpacing(10)
@@ -405,7 +411,7 @@ class MainWindow(QMainWindow):
         rl.setSpacing(0)
         rl.addWidget(self._build_titlebar())
         body = QHBoxLayout()
-        body.setContentsMargins(0, 0, 0, 0)
+        body.setContentsMargins(10, 10, 0, 10)
         body.setSpacing(0)
         body.addWidget(self._build_sidebar())
         self._pages = QStackedWidget()
@@ -431,9 +437,6 @@ class MainWindow(QMainWindow):
             logo.setPixmap(QPixmap(icon_png).scaled(
                 22, 22, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         h.addWidget(logo)
-        title = QLabel("北斋FGO助手")
-        title.setObjectName("tbTitle")
-        h.addWidget(title)
         h.addStretch(1)
 
         def win_btn(name: str, icon: str, cls: str = "winbtn") -> QPushButton:
@@ -486,55 +489,97 @@ class MainWindow(QMainWindow):
             self.showMaximized()
             self._btn_max.setIcon(svg_icon("restore", _T["icon"], 14))
 
-    # ---- 侧边栏 ----
+    # ---- 侧边栏（悬浮岛，可折叠） ----
+    SIDEBAR_W_EXPAND = 216
+    SIDEBAR_W_COLLAPSE = 64
+
     def _build_sidebar(self) -> QWidget:
         sidebar = QWidget()
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(216)
+        sidebar.setFixedWidth(self.SIDEBAR_W_EXPAND)
+        self._sidebar = sidebar
         sv = QVBoxLayout(sidebar)
         sv.setContentsMargins(12, 16, 12, 12)
         sv.setSpacing(4)
 
-        # logo 区
+        # logo 区 + 折叠按钮
         logo_row = QHBoxLayout()
         logo_row.setSpacing(10)
         logo = QLabel()
         icon_png = os.path.normpath(os.path.join(TEMPLATE_DIR, "..", "icon.png"))
         if os.path.exists(icon_png):
             logo.setPixmap(QPixmap(icon_png).scaled(
-                36, 36, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         logo_row.addWidget(logo)
         col = QVBoxLayout()
         col.setSpacing(0)
-        t1 = QLabel("北斋FGO助手")
-        t1.setObjectName("appTitle")
-        t2 = QLabel("HFA")
-        t2.setObjectName("appSub")
-        col.addWidget(t1)
-        col.addWidget(t2)
+        self._app_title = QLabel("北斋FGO助手")
+        self._app_title.setObjectName("appTitle")
+        self._app_sub = QLabel("HFA")
+        self._app_sub.setObjectName("appSub")
+        col.addWidget(self._app_title)
+        col.addWidget(self._app_sub)
         logo_row.addLayout(col, 1)
+        self._btn_collapse = QPushButton()
+        self._btn_collapse.setObjectName("ghost")
+        self._btn_collapse.setFixedSize(28, 28)
+        self._btn_collapse.setIcon(svg_icon("collapse", _T["icon"], 14))
+        self._btn_collapse.setCursor(Qt.PointingHandCursor)
+        self._btn_collapse.setToolTip("收起侧边栏")
+        self._btn_collapse.clicked.connect(self._toggle_sidebar)
+        logo_row.addWidget(self._btn_collapse)
         sv.addLayout(logo_row)
-        sv.addSpacing(20)
+        sv.addSpacing(16)
 
-        cap = QLabel("功能菜单")
-        cap.setObjectName("caption")
-        sv.addWidget(cap)
+        self._caption = QLabel("功能菜单")
+        self._caption.setObjectName("caption")
+        sv.addWidget(self._caption)
         sv.addSpacing(4)
 
         self._nav_buttons: dict[int, QPushButton] = {}
-        self._nav_buttons[0] = self._make_nav_btn(sv, 0, "自动结算", "play")
+        self._nav_text: dict[int, str] = {}
+        for idx, (name, icon) in enumerate([
+            ("自动结算", "play"), ("设置", "settings"), ("日志", "log"),
+        ]):
+            self._nav_text[idx] = name
+            self._nav_buttons[idx] = self._make_nav_btn(sv, idx, name, icon)
         self._nav_buttons[0].setChecked(True)
 
         sv.addStretch(1)
+        self._ver_label = QLabel(f"v{__version__}")
+        self._ver_label.setObjectName("caption")
+        sv.addWidget(self._ver_label)
 
-        self._nav_buttons[1] = self._make_nav_btn(sv, 1, "设置", "settings")
-        self._nav_buttons[2] = self._make_nav_btn(sv, 2, "日志", "log")
-
-        sv.addSpacing(8)
-        ver = QLabel(f"v{__version__}")
-        ver.setObjectName("caption")
-        sv.addWidget(ver)
+        # 折叠动画
+        from PySide6.QtCore import (
+            QPropertyAnimation, QEasingCurve, QParallelAnimationGroup,
+        )
+        self._sidebar_anim = QParallelAnimationGroup(self)
+        for prop in (b"minimumWidth", b"maximumWidth"):
+            anim = QPropertyAnimation(sidebar, prop, self)
+            anim.setDuration(180)
+            anim.setEasingCurve(QEasingCurve.OutCubic)
+            self._sidebar_anim.addAnimation(anim)
         return sidebar
+
+    def _toggle_sidebar(self) -> None:
+        self._collapsed = not getattr(self, "_collapsed", False)
+        target = self.SIDEBAR_W_COLLAPSE if self._collapsed else self.SIDEBAR_W_EXPAND
+        self._sidebar_anim.stop()
+        for i in range(self._sidebar_anim.animationCount()):
+            self._sidebar_anim.animationAt(i).setEndValue(target)
+        self._sidebar_anim.start()
+
+        # 文字元素显隐
+        show = not self._collapsed
+        for idx, btn in self._nav_buttons.items():
+            btn.setText(self._nav_text[idx] if show else "")
+            btn.setToolTip(self._nav_text[idx])
+        self._btn_collapse.setIcon(svg_icon(
+            "expand" if self._collapsed else "collapse", _T["icon"], 14))
+        self._btn_collapse.setToolTip("展开侧边栏" if self._collapsed else "收起侧边栏")
+        for w in (self._app_title, self._app_sub, self._caption, self._ver_label):
+            w.setVisible(show)
 
     def _make_nav_btn(self, layout: QVBoxLayout, idx: int, name: str, icon: str) -> QPushButton:
         btn = QPushButton(svg_icon(icon, _T["icon"], 16), name)
@@ -634,7 +679,6 @@ class MainWindow(QMainWindow):
         sup_hint = QLabel("框选要点的整行，点击其中心；至少录一行")
         sup_hint.setObjectName("hint")
         sv2.addWidget(sup_hint)
-        sv2.addStretch(1)
         use_row = QHBoxLayout()
         use_row.setSpacing(10)
         self.row_radios: dict[int, QRadioButton] = {}
@@ -648,6 +692,7 @@ class MainWindow(QMainWindow):
         sv2.addLayout(use_row)
         for i in (1, 2, 3):
             sv2.addLayout(self._slot_row(f"support_row{i}", f"助战第{i}行", "运行中可随时切换"))
+        sv2.addStretch(1)  # 多余高度全部压到卡片底部，内容保持顶部紧凑
         row.addWidget(tpl_card, 3)
         row.addWidget(sup_card, 2)
         v.addLayout(row, 1)
