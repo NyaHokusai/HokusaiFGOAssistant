@@ -18,11 +18,16 @@ def _enable_dpi_awareness() -> None:
 
 def main() -> None:
     _enable_dpi_awareness()
+    from PySide6.QtGui import QFont
     from PySide6.QtWidgets import QApplication
 
     from app.main_window import MainWindow
 
     app = QApplication(sys.argv)
+    font = QFont()
+    font.setFamilies(["HarmonyOS Sans SC", "HarmonyOS Sans", "Microsoft YaHei UI"])
+    font.setPointSize(10)
+    app.setFont(font)
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

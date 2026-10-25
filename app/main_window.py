@@ -1,9 +1,10 @@
-"""北斋FGO助手 - 主界面（现代深色主题：侧边栏 + 毛玻璃卡片）。
+"""北斋FGO助手 - 主界面 v2（无边框一体化窗口 + 自定义标题栏 + 侧边栏功能区）。
 
-布局：左侧导航栏（运行 / 模板 / 设置 / 日志），右侧堆叠页面。
-开始后引擎持续监控模拟器画面，自动完成：
-战斗结果 → 请点击游戏界面 → 下一步 → 连续出击 →（没体力吃金苹果）→ 选中的助战行。
-战斗本体由玩家手动打，打完引擎自动接管。
+布局参考成熟桌面产品：
+- 自绘标题栏（logo + 拖拽区 + 最小化/最大化/关闭），Win11 下 DWM 圆角
+- 侧边栏：「功能菜单」分组放功能名（自动结算），底部放设置/日志与版本号
+- 内容区：英雄卡（运行控制）+ 模板管理卡 + 助战位置卡
+战斗本体由玩家手动打，打完引擎自动接管结算流程。
 """
 from __future__ import annotations
 
@@ -14,9 +15,11 @@ import sys
 import time
 
 import cv2
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QIcon, QPixmap
+from PySide6.QtCore import QRect, QSize, Qt, QTimer
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -31,7 +34,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
-    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -48,8 +50,9 @@ else:
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATE_DIR = os.path.join(BASE_DIR, "assets", "templates")
 META_PATH = os.path.join(TEMPLATE_DIR, "meta.json")
+FONT_STACK = "'HarmonyOS Sans SC', 'HarmonyOS Sans', 'Microsoft YaHei UI'"
 
-# (key, 界面显示说明)；助战行位置单独处理
+# (key, 名称, 说明)；助战行位置单独处理
 TEMPLATE_SLOTS = [
     ("battle_result", "「战斗结果」标题", "结算页识别，点屏幕正中央"),
     ("tap_start", "「请点击游戏界面」", "点屏幕正中央"),
@@ -60,108 +63,146 @@ TEMPLATE_SLOTS = [
     ("support_title", "「助战选择」标题", "识别助战界面"),
 ]
 
-# ============ 主题（深空科技：8pt 网格 + 12px 圆角 + 克制阴影） ============
+# ============ 主题 token（Apple HIG 暗色 + 品牌紫） ============
 _T = {
-    "bg":          (13, 13, 26),
-    "sidebar":     (22, 22, 40),
-    "card":        (255, 255, 255, 10),   # rgba alpha 0~255
-    "card_border": (255, 255, 255, 18),
-    "primary":     "#6C63FF",
-    "primary_h":   "#7D75FF",
-    "text":        "#E8E8F2",
-    "muted":       "#9A9AB0",
-    "success":     "#3ECFCF",
-    "danger":      "#FF6584",
-    "builtin":     "#7B9DFF",
+    "bg_top":     "#141422",
+    "bg_bottom":  "#0C0C18",
+    "sidebar":    "rgba(255, 255, 255, 0.03)",
+    "glass":      "rgba(32, 32, 50, 0.55)",
+    "sep":        "rgba(255, 255, 255, 0.07)",
+    "fill":       "rgba(120, 120, 128, 0.22)",
+    "primary":    "#6C63FF",
+    "primary_h":  "#7D75FF",
+    "text":       "#F0F0F8",
+    "label2":     "rgba(235, 235, 245, 0.62)",
+    "label3":     "rgba(235, 235, 245, 0.35)",
+    "success":    "#3ECFCF",
+    "danger":     "#FF6584",
+    "builtin":    "#7B9DFF",
+    "icon":       "#C9C9DE",
 }
 
-_BACKDROP_ALPHA = 0.72  # 毛玻璃激活时根背景透明度（透过 Acrylic 看到 blur）
+# ============ SVG 图标（feather 风格，统一 2px 圆头描边） ============
+_ICON_PATHS = {
+    "play": '<polygon points="6 4 20 12 6 20 6 4"/>',
+    "grid": '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/>',
+    "settings": '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+    "log": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>',
+    "refresh": '<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>',
+    "crop": '<path d="M6.13 1L6 16a2 2 0 0 0 2 2h15"/><path d="M1 6.13L16 6a2 2 0 0 1 2 2v15"/>',
+    "min": '<line x1="5" y1="12" x2="19" y2="12"/>',
+    "max": '<rect x="5" y="5" width="14" height="14" rx="2"/>',
+    "restore": '<rect x="4" y="8" width="12" height="12" rx="2"/><polyline points="8 4 18 4 18 14"/>',
+    "close": '<line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/>',
+}
 
 
-def _rgba(rgb, alpha: float) -> str:
-    r, g, b = rgb[0], rgb[1], rgb[2]
-    return f"rgba({r}, {g}, {b}, {alpha})"
+def svg_icon(name: str, color: str, size: int = 18) -> QIcon:
+    body = _ICON_PATHS[name]
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" '
+        f'viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" '
+        f'stroke-linecap="round" stroke-linejoin="round">{body}</svg>'
+    )
+    renderer = QSvgRenderer(bytearray(svg.encode("utf-8")))
+    pm = QPixmap(size * 2, size * 2)  # 2x 抗锯齿
+    pm.fill(Qt.transparent)
+    painter = QPainter(pm)
+    renderer.render(painter, QRect(0, 0, size * 2, size * 2))
+    painter.end()
+    pm.setDevicePixelRatio(2.0)
+    return QIcon(pm)
 
 
-def build_stylesheet(solid: bool) -> str:
-    """生成全局 QSS（Apple HIG 暗色材质：16px 圆角玻璃卡 + 次级标签色 + 4pt 网格）。"""
-    a = 1.0 if solid else _BACKDROP_ALPHA
+def build_stylesheet() -> str:
     t = _T
-    # Apple 暗色玻璃材质：卡片 rgba(28,28,30,0.72)，边线 rgba(255,255,255,0.08)
-    glass = "rgba(30, 30, 46, 0.72)" if not solid else "rgba(30, 30, 46, 0.97)"
-    fill = "rgba(120, 120, 128, 0.22)"          # Apple Secondary Fill (dark)
-    label2 = "rgba(235, 235, 245, 0.6)"          # Label Secondary (dark)
-    label3 = "rgba(235, 235, 245, 0.35)"         # Label Tertiary (dark)
-    sep = "rgba(255, 255, 255, 0.08)"            # Separator
     return f"""
-    QWidget {{ color: {t['text']}; font-size: 13px; }}
-    #root {{ background: {_rgba(t['bg'], a)}; }}
-    #sidebar {{
-        background: {_rgba(t['sidebar'], a if not solid else 1.0)};
-        border-right: 1px solid {sep};
+    QWidget {{ color: {t['text']}; font-size: 13px;
+               font-family: {FONT_STACK}; }}
+    #root {{
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {t['bg_top']}, stop:1 {t['bg_bottom']});
     }}
-    QLabel#appTitle {{ font-size: 17px; font-weight: 700; letter-spacing: 0.3px; }}
-    QLabel#appSub {{ font-size: 10px; color: {label3}; letter-spacing: 3px; }}
-    QLabel#pageTitle {{ font-size: 22px; font-weight: 700; letter-spacing: 0.2px; }}
-    QLabel#sectionTitle {{ font-size: 15px; font-weight: 700; }}
-    QLabel#muted {{ color: {label2}; }}
-    QLabel#hint {{ color: {label3}; font-size: 12px; }}
+    QLabel#pageTitle {{ font-size: 20px; font-weight: 700; }}
+    QLabel#sectionTitle {{ font-size: 14px; font-weight: 700; }}
+    QLabel#muted {{ color: {t['label2']}; }}
+    QLabel#hint {{ color: {t['label3']}; font-size: 12px; }}
+    QLabel#caption {{ color: {t['label3']}; font-size: 10px; letter-spacing: 2px; }}
 
+    /* ---------- 侧边栏 ---------- */
+    #sidebar {{ background: {t['sidebar']}; border-right: 1px solid {t['sep']}; }}
+    QLabel#appTitle {{ font-size: 15px; font-weight: 700; }}
+    QLabel#appSub {{ font-size: 9px; color: {t['label3']}; letter-spacing: 3px; }}
     QPushButton#nav {{
-        text-align: left; padding: 0 14px; min-height: 40px;
+        text-align: left; padding: 0 12px; min-height: 38px;
         border: none; border-radius: 10px; background: transparent;
-        color: {label2}; font-size: 13px; font-weight: 600;
+        color: {t['label2']}; font-size: 13px; font-weight: 600;
     }}
     QPushButton#nav:hover {{ background: rgba(255, 255, 255, 0.06); color: {t['text']}; }}
     QPushButton#nav:checked {{
-        background: rgba(108, 99, 255, 0.20); color: {t['text']};
-        border-left: 3px solid {t['primary']}; padding-left: 11px;
+        background: rgba(108, 99, 255, 0.18); color: {t['text']};
+        border-left: 3px solid {t['primary']}; padding-left: 9px;
     }}
 
+    /* ---------- 标题栏 ---------- */
+    #titlebar {{ background: transparent; border-bottom: 1px solid {t['sep']}; }}
+    QLabel#tbTitle {{ font-size: 12px; font-weight: 600; color: {t['label2']}; }}
+    QPushButton#winbtn {{
+        background: transparent; border: none; border-radius: 0;
+        min-height: 40px; max-height: 40px; padding: 0; min-width: 44px;
+    }}
+    QPushButton#winbtn:hover {{ background: rgba(255, 255, 255, 0.08); }}
+    QPushButton#winclose:hover {{ background: #E81123; }}
+
+    /* ---------- 卡片 ---------- */
     QFrame#card {{
-        background: {glass};
-        border: 1px solid {sep};
+        background: {t['glass']};
+        border: 1px solid {t['sep']};
         border-radius: 16px;
     }}
+    QFrame#iconTile {{
+        background: rgba(108, 99, 255, 0.16);
+        border: 1px solid rgba(108, 99, 255, 0.35);
+        border-radius: 12px;
+    }}
 
+    /* ---------- 控件 ---------- */
     QPushButton {{
-        background: {fill}; color: {t['text']};
-        border: none;
+        background: {t['fill']}; color: {t['text']}; border: none;
         border-radius: 10px; padding: 0 16px; min-height: 36px; font-weight: 600;
     }}
     QPushButton:hover {{ background: rgba(120, 120, 128, 0.32); }}
     QPushButton:pressed {{ background: rgba(120, 120, 128, 0.28); }}
-    QPushButton:disabled {{ color: {label3}; background: rgba(120, 120, 128, 0.12); }}
+    QPushButton:disabled {{ color: {t['label3']}; background: rgba(120, 120, 128, 0.12); }}
     QPushButton#primary {{
         background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                     stop:0 #7D75FF, stop:1 #6C63FF);
-        border: none; color: white; min-height: 44px; border-radius: 12px;
+        color: white; min-height: 42px; border-radius: 12px;
         font-size: 14px; font-weight: 700;
     }}
     QPushButton#primary:hover {{ background: {t['primary_h']}; }}
     QPushButton#primary:disabled {{
-        background: rgba(108, 99, 255, 0.35); color: rgba(255,255,255,0.6);
+        background: rgba(108, 99, 255, 0.30); color: rgba(255,255,255,0.55);
     }}
     QPushButton#danger {{
         background: rgba(255, 101, 132, 0.12); color: {t['danger']};
-        min-height: 44px; border-radius: 12px; font-size: 14px; font-weight: 700;
+        min-height: 42px; border-radius: 12px; font-size: 14px; font-weight: 700;
     }}
     QPushButton#danger:hover {{ background: rgba(255, 101, 132, 0.22); }}
-    QPushButton#danger:disabled {{ color: {label3}; background: rgba(120,120,128,0.12); }}
+    QPushButton#danger:disabled {{ color: {t['label3']}; background: rgba(120,120,128,0.12); }}
     QPushButton#ghost {{
-        background: transparent; border: none; color: {label2};
-        min-height: 30px; font-weight: 600;
+        background: transparent; min-height: 36px; font-weight: 600; color: {t['label2']};
     }}
     QPushButton#ghost:hover {{ color: {t['text']}; background: rgba(255,255,255,0.06); }}
 
     QComboBox, QDoubleSpinBox {{
-        background: {fill}; border: none;
+        background: {t['fill']}; border: none;
         border-radius: 10px; min-height: 36px; padding: 0 10px; color: {t['text']};
     }}
-    QComboBox:hover, QDoubleSpinBox:hover {{ border-color: {t['primary']}; }}
+    QComboBox:hover, QDoubleSpinBox:hover {{ background: rgba(120, 120, 128, 0.32); }}
     QComboBox::drop-down {{ border: none; width: 26px; }}
     QComboBox QAbstractItemView {{
-        background: #16162A; border: 1px solid {_rgba(t['card_border'], 0.8)};
+        background: #1C1C2E; border: 1px solid {t['sep']};
         border-radius: 10px; selection-background-color: rgba(108,99,255,0.35);
         outline: none;
     }}
@@ -170,65 +211,30 @@ def build_stylesheet(solid: bool) -> str:
     QRadioButton {{ spacing: 6px; }}
     QRadioButton::indicator {{
         width: 16px; height: 16px; border-radius: 8px;
-        border: 2px solid {label2}; background: transparent;
+        border: 2px solid {t['label2']}; background: transparent;
     }}
     QRadioButton::indicator:checked {{ border: 5px solid {t['primary']}; background: white; }}
 
     QPlainTextEdit#log {{
-        background: {glass}; border: 1px solid {sep};
+        background: {t['glass']}; border: 1px solid {t['sep']};
         border-radius: 16px; padding: 12px;
-        font-family: 'Consolas', 'Courier New', monospace; font-size: 12px; color: #C8C8DE;
+        font-family: 'Consolas', 'Cascadia Mono', monospace; font-size: 12px; color: #C8C8DE;
     }}
     QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px; }}
-    QScrollBar::handle:vertical {{ background: {_rgba(t['card_border'], 0.9)}; border-radius: 4px; min-height: 30px; }}
+    QScrollBar::handle:vertical {{ background: rgba(255,255,255,0.14); border-radius: 4px; min-height: 30px; }}
     QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
     QScrollArea {{ border: none; background: transparent; }}
     QScrollArea > QWidget > QWidget {{ background: transparent; }}
     """
 
 
-def _enable_backdrop(hwnd: int) -> bool:
-    """开启系统级毛玻璃。返回是否成功（Win11 Acrylic 优先，Win10 走 Accent 兜底）。"""
-    # 深色模式（标题栏）
-    dark = ctypes.c_int(1)
+def _enable_round_corners(hwnd: int) -> None:
+    """Win11 圆角（frameless 窗口默认直角，用 DWM 打开）。"""
     try:
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(dark), 4)
+        pref = ctypes.c_int(2)  # DWMWCP_ROUND
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(pref), 4)
     except Exception:
         pass
-    # Win11 22H2+ Acrylic
-    try:
-        val = ctypes.c_int(3)  # DWMSBT_TRANSIENTWINDOW = Acrylic
-        ret = ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 38, ctypes.byref(val), 4)
-        if ret == 0:
-            return True
-    except Exception:
-        pass
-    # Win10 Acrylic (SetWindowCompositionAttribute)
-    try:
-        class ACCENTPOLICY(ctypes.Structure):
-            _fields_ = [
-                ("AccentState", ctypes.c_int),
-                ("AccentFlags", ctypes.c_int),
-                ("GradientColor", ctypes.c_uint),
-                ("AnimationId", ctypes.c_int),
-            ]
-
-        class WINCOMPATTRDATA(ctypes.Structure):
-            _fields_ = [
-                ("Attribute", ctypes.c_int),
-                ("Data", ctypes.c_void_p),
-                ("SizeOfData", ctypes.c_size_t),
-            ]
-
-        accent = ACCENTPOLICY(4, 2, 0xCC000000, 0)  # 4=AcrylicBlurBehind，黑色 tint
-        data = WINCOMPATTRDATA(
-            19, ctypes.cast(ctypes.pointer(accent), ctypes.c_void_p), ctypes.sizeof(accent)
-        )
-        if ctypes.windll.user32.SetWindowCompositionAttribute(hwnd, ctypes.byref(data)):
-            return True
-    except Exception:
-        pass
-    return False
 
 
 class MainWindow(QMainWindow):
@@ -238,40 +244,90 @@ class MainWindow(QMainWindow):
         icon_png = os.path.normpath(os.path.join(TEMPLATE_DIR, "..", "icon.png"))
         if os.path.exists(icon_png):
             self.setWindowIcon(QIcon(icon_png))
-        self.resize(920, 660)
+        self.resize(1000, 680)
+        self.setMinimumSize(880, 620)
+        self.setWindowFlag(Qt.FramelessWindowHint)
+        self.setMouseTracking(True)
 
         os.makedirs(TEMPLATE_DIR, exist_ok=True)
         self._engine: FgoEngine | None = None
         self._cfg_path = os.path.join(BASE_DIR, "config.json")
         self._cfg = self._load_config()
-        self._backdrop_ok = False
-        self._solid_applied = False
+        self._drag_pos = None
+        self._resize_edge = ""
 
-        # 毛玻璃需要窗口背景可透出系统模糊层
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setStyleSheet(build_stylesheet(solid=False))
-
+        self.setStyleSheet(build_stylesheet())
         self._build_ui()
         self._apply_config()
         self.refresh_windows()
         self._restore_window_selection()
         self._refresh_template_status()
+        self._center_on_screen()
 
-    # ================= 毛玻璃 =================
+    def _center_on_screen(self) -> None:
+        screen = QApplication.primaryScreen().availableGeometry()
+        self.move(
+            screen.x() + (screen.width() - self.width()) // 2,
+            screen.y() + (screen.height() - self.height()) // 2,
+        )
+
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
-        if not self._backdrop_ok and not self._solid_applied:
-            QTimer.singleShot(0, self._try_backdrop)
+        QTimer.singleShot(0, lambda: _enable_round_corners(int(self.winId())))
 
-    def _try_backdrop(self) -> None:
-        try:
-            hwnd = int(self.winId())
-        except Exception:
+    # ================= 无边框：拖拽 / 双击最大化 / 边缘缩放 =================
+    def _hit_edge(self, pos) -> str:
+        if self.isMaximized():
+            return ""
+        m, r = 6, self.rect()
+        edge = ""
+        if pos.x() <= m:
+            edge += "L"
+        if pos.x() >= r.width() - m:
+            edge += "R"
+        if pos.y() <= m:
+            edge += "T"
+        if pos.y() >= r.height() - m:
+            edge += "B"
+        return edge
+
+    _EDGE_CURSORS = {"L": Qt.SizeHorCursor, "R": Qt.SizeHorCursor,
+                     "T": Qt.SizeVerCursor, "B": Qt.SizeVerCursor,
+                     "TL": Qt.SizeFDiagCursor, "BR": Qt.SizeFDiagCursor,
+                     "TR": Qt.SizeBDiagCursor, "BL": Qt.SizeBDiagCursor}
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.LeftButton:
+            self._resize_edge = self._hit_edge(event.position().toPoint())
+            if self._resize_edge:
+                self._drag_geo = self.frameGeometry()
+                self._drag_mouse = event.globalPosition().toPoint()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        pos = event.position().toPoint()
+        if self._resize_edge and event.buttons() & Qt.LeftButton:
+            d = event.globalPosition().toPoint() - self._drag_mouse
+            g = QRect(self._drag_geo)
+            if "L" in self._resize_edge:
+                g.setLeft(g.left() + d.x())
+            if "R" in self._resize_edge:
+                g.setRight(g.right() + d.x())
+            if "T" in self._resize_edge:
+                g.setTop(g.top() + d.y())
+            if "B" in self._resize_edge:
+                g.setBottom(g.bottom() + d.y())
+            if g.width() >= self.minimumWidth() and g.height() >= self.minimumHeight():
+                self.setGeometry(g)
             return
-        self._backdrop_ok = _enable_backdrop(hwnd)
-        if not self._backdrop_ok:
-            self._solid_applied = True
-            self.setStyleSheet(build_stylesheet(solid=True))
+        edge = self._hit_edge(pos)
+        self.setCursor(self._EDGE_CURSORS.get(edge, Qt.ArrowCursor))
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        self._resize_edge = ""
+        super().mouseReleaseEvent(event)
 
     # ================= 配置持久化 =================
     def _load_config(self) -> dict:
@@ -327,11 +383,10 @@ class MainWindow(QMainWindow):
     def _card(title: str | None = None) -> tuple[QFrame, QVBoxLayout]:
         card = QFrame()
         card.setObjectName("card")
-        # Apple 阴影 Level 1（克制的一层深度）
         shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(18)
-        shadow.setOffset(0, 3)
-        shadow.setColor(QColor(0, 0, 0, 70))
+        shadow.setBlurRadius(20)
+        shadow.setOffset(0, 4)
+        shadow.setColor(QColor(0, 0, 0, 60))
         card.setGraphicsEffect(shadow)
         v = QVBoxLayout(card)
         v.setContentsMargins(20, 18, 20, 18)
@@ -345,168 +400,243 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         root = QWidget()
         root.setObjectName("root")
-        root_layout = QHBoxLayout(root)
-        root_layout.setContentsMargins(0, 0, 0, 0)
-        root_layout.setSpacing(0)
+        rl = QVBoxLayout(root)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(0)
+        rl.addWidget(self._build_titlebar())
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        body.addWidget(self._build_sidebar())
+        self._pages = QStackedWidget()
+        self._pages.addWidget(self._build_main_page())   # 0 自动结算（运行+模板）
+        self._pages.addWidget(self._build_settings_page())  # 1 设置
+        self._pages.addWidget(self._build_log_page())       # 2 日志
+        body.addWidget(self._pages, 1)
+        rl.addLayout(body, 1)
+        self.setCentralWidget(root)
 
-        # ---------- 侧边栏 ----------
+    # ---- 标题栏 ----
+    def _build_titlebar(self) -> QWidget:
+        bar = QWidget()
+        bar.setObjectName("titlebar")
+        bar.setFixedHeight(44)
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(14, 0, 0, 0)
+        h.setSpacing(8)
+
+        icon_png = os.path.normpath(os.path.join(TEMPLATE_DIR, "..", "icon.png"))
+        logo = QLabel()
+        if os.path.exists(icon_png):
+            logo.setPixmap(QPixmap(icon_png).scaled(
+                22, 22, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        h.addWidget(logo)
+        title = QLabel("北斋FGO助手")
+        title.setObjectName("tbTitle")
+        h.addWidget(title)
+        h.addStretch(1)
+
+        def win_btn(name: str, icon: str, cls: str = "winbtn") -> QPushButton:
+            btn = QPushButton()
+            btn.setObjectName(cls)
+            btn.setFixedSize(44, 40)
+            btn.setIcon(svg_icon(icon, _T["icon"], 14))
+            btn.setCursor(Qt.PointingHandCursor)
+            return btn
+
+        self._btn_min = win_btn("min", "min")
+        self._btn_min.clicked.connect(self.showMinimized)
+        self._btn_max = win_btn("max", "max")
+        self._btn_max.clicked.connect(self._toggle_max)
+        self._btn_close = win_btn("close", "close", "winclose")
+        self._btn_close.clicked.connect(self.close)
+        for b in (self._btn_min, self._btn_max, self._btn_close):
+            h.addWidget(b)
+
+        # 拖拽移动 / 双击最大化
+        self._tb_pressed = False
+
+        def tb_press(ev):
+            if ev.button() == Qt.LeftButton:
+                self._tb_pressed = True
+                self._tb_drag = ev.globalPosition().toPoint() - self.frameGeometry().topLeft()
+
+        def tb_move(ev):
+            if self._tb_pressed and not self.isMaximized():
+                self.move(ev.globalPosition().toPoint() - self._tb_drag)
+
+        def tb_release(_):
+            self._tb_pressed = False
+
+        def tb_dblclick(ev):
+            if ev.button() == Qt.LeftButton:
+                self._toggle_max()
+
+        bar.mousePressEvent = tb_press
+        bar.mouseMoveEvent = tb_move
+        bar.mouseReleaseEvent = tb_release
+        bar.mouseDoubleClickEvent = tb_dblclick
+        return bar
+
+    def _toggle_max(self) -> None:
+        if self.isMaximized():
+            self.showNormal()
+            self._btn_max.setIcon(svg_icon("max", _T["icon"], 14))
+        else:
+            self.showMaximized()
+            self._btn_max.setIcon(svg_icon("restore", _T["icon"], 14))
+
+    # ---- 侧边栏 ----
+    def _build_sidebar(self) -> QWidget:
         sidebar = QWidget()
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(212)
+        sidebar.setFixedWidth(216)
         sv = QVBoxLayout(sidebar)
-        sv.setContentsMargins(14, 18, 14, 14)
-        sv.setSpacing(6)
+        sv.setContentsMargins(12, 16, 12, 12)
+        sv.setSpacing(4)
 
+        # logo 区
         logo_row = QHBoxLayout()
+        logo_row.setSpacing(10)
         logo = QLabel()
         icon_png = os.path.normpath(os.path.join(TEMPLATE_DIR, "..", "icon.png"))
         if os.path.exists(icon_png):
-            logo.setPixmap(QPixmap(icon_png).scaled(40, 40, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        title_col = QVBoxLayout()
-        title_col.setSpacing(0)
+            logo.setPixmap(QPixmap(icon_png).scaled(
+                36, 36, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        logo_row.addWidget(logo)
+        col = QVBoxLayout()
+        col.setSpacing(0)
         t1 = QLabel("北斋FGO助手")
         t1.setObjectName("appTitle")
         t2 = QLabel("HFA")
         t2.setObjectName("appSub")
-        title_col.addWidget(t1)
-        title_col.addWidget(t2)
-        logo_row.addWidget(logo)
-        logo_row.addSpacing(8)
-        logo_row.addLayout(title_col, 1)
+        col.addWidget(t1)
+        col.addWidget(t2)
+        logo_row.addLayout(col, 1)
         sv.addLayout(logo_row)
-        sv.addSpacing(18)
+        sv.addSpacing(20)
 
-        # 功能区：主要页面
-        self._nav_buttons: list[QPushButton] = []
-        for idx, (name, symbol) in enumerate([("运行", "▶"), ("模板", "▦")]):
-            self._nav_buttons.append(self._make_nav_btn(sv, idx, name, symbol))
+        cap = QLabel("功能菜单")
+        cap.setObjectName("caption")
+        sv.addWidget(cap)
+        sv.addSpacing(4)
+
+        self._nav_buttons: dict[int, QPushButton] = {}
+        self._nav_buttons[0] = self._make_nav_btn(sv, 0, "自动结算", "play")
         self._nav_buttons[0].setChecked(True)
 
-        # 系统区：固定在侧边栏底部
         sv.addStretch(1)
-        sys_label = QLabel("系统")
-        sys_label.setObjectName("appSub")
-        sv.addWidget(sys_label)
-        for idx, (name, symbol) in [(2, ("设置", "⚙")), (3, ("日志", "☰"))]:
-            self._nav_buttons.append(self._make_nav_btn(sv, idx, name, symbol))
 
-        sv.addSpacing(10)
-        ver = QLabel(f"v{__version__} · HFA")
-        ver.setObjectName("appSub")
-        ver.setAlignment(Qt.AlignLeft)
+        self._nav_buttons[1] = self._make_nav_btn(sv, 1, "设置", "settings")
+        self._nav_buttons[2] = self._make_nav_btn(sv, 2, "日志", "log")
+
+        sv.addSpacing(8)
+        ver = QLabel(f"v{__version__}")
+        ver.setObjectName("caption")
         sv.addWidget(ver)
+        return sidebar
 
-        # ---------- 内容区 ----------
-        self._pages = QStackedWidget()
-        self._pages.addWidget(self._build_run_page())      # 0 运行
-        self._pages.addWidget(self._build_template_page()) # 1 模板
-        self._pages.addWidget(self._build_settings_page()) # 2 设置
-        self._pages.addWidget(self._build_log_page())      # 3 日志
-
-        root_layout.addWidget(sidebar)
-        root_layout.addWidget(self._pages, 1)
-        self.setCentralWidget(root)
-
-    def _switch_page(self, idx: int) -> None:
-        self._pages.setCurrentIndex(idx)
-        for i, btn in enumerate(self._nav_buttons):
-            btn.setChecked(i == idx)
-
-    def _make_nav_btn(self, layout: QVBoxLayout, idx: int, name: str, symbol: str) -> QPushButton:
-        btn = QPushButton(f"{symbol}   {name}")
+    def _make_nav_btn(self, layout: QVBoxLayout, idx: int, name: str, icon: str) -> QPushButton:
+        btn = QPushButton(svg_icon(icon, _T["icon"], 16), name)
         btn.setObjectName("nav")
+        btn.setIconSize(QSize(16, 16))
         btn.setCheckable(True)
         btn.setCursor(Qt.PointingHandCursor)
         btn.clicked.connect(lambda _, i=idx: self._switch_page(i))
         layout.addWidget(btn)
         return btn
 
-    # ---- 页 1：运行 ----
-    def _build_run_page(self) -> QWidget:
-        page = QWidget()
-        v = QVBoxLayout(page)
-        v.setContentsMargins(24, 24, 24, 24)
-        v.setSpacing(16)
+    def _switch_page(self, idx: int) -> None:
+        self._pages.setCurrentIndex(idx)
+        for i, btn in self._nav_buttons.items():
+            btn.setChecked(i == idx)
 
-        head = QLabel("运行")
-        head.setObjectName("pageTitle")
-        v.addWidget(head)
-
-        # 状态卡
-        state_card, sv = self._card()
-        self.state_label = QLabel("待机")
-        self.state_label.setStyleSheet(f"font-size: 18px; font-weight: 700; color: {_T['muted']};")
-        self.state_dot = QLabel("●")
-        self.state_dot.setStyleSheet(f"color: {_T['muted']}; font-size: 14px;")
-        row = QHBoxLayout()
-        row.addWidget(self.state_dot)
-        row.addWidget(self.state_label, 1)
-        sv.addLayout(row)
-        state_hint = QLabel("点击「开始」后引擎会持续监控模拟器画面，自动完成对局结束后的全部流程")
-        state_hint.setObjectName("muted")
-        state_hint.setWordWrap(True)
-        sv.addWidget(state_hint)
-        v.addWidget(state_card)
-
-        # 目标窗口卡
-        win_card, wv = self._card("目标窗口")
-        win_row = QHBoxLayout()
-        win_row.setSpacing(8)
-        self.win_combo = QComboBox()
-        win_row.addWidget(self.win_combo, 1)
-        refresh_btn = QPushButton("刷新")
-        refresh_btn.clicked.connect(self.refresh_windows)
-        win_row.addWidget(refresh_btn)
-        wv.addLayout(win_row)
-        v.addWidget(win_card)
-
-        # 操作卡
-        op_card, ov = self._card("操作")
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(10)
-        self.run_btn = QPushButton("▶  开始")
-        self.run_btn.setObjectName("primary")
-        self.run_btn.setMinimumHeight(40)
-        self.run_btn.setCursor(Qt.PointingHandCursor)
-        self.run_btn.clicked.connect(self.on_start)
-        self.stop_btn = QPushButton("■  结束")
-        self.stop_btn.setObjectName("danger")
-        self.stop_btn.setMinimumHeight(40)
-        self.stop_btn.setEnabled(False)
-        self.stop_btn.setCursor(Qt.PointingHandCursor)
-        self.stop_btn.clicked.connect(self.on_stop)
-        btn_row.addWidget(self.run_btn, 1)
-        btn_row.addWidget(self.stop_btn, 1)
-        ov.addLayout(btn_row)
-        v.addWidget(op_card)
-        v.addStretch(1)
-        return page
-
-    # ---- 页 2：模板 ----
-    def _build_template_page(self) -> QWidget:
+    # ---- 页 0：自动结算（英雄卡 + 模板 + 助战） ----
+    def _build_main_page(self) -> QWidget:
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         page = QWidget()
         v = QVBoxLayout(page)
-        v.setContentsMargins(24, 24, 24, 24)
+        v.setContentsMargins(26, 22, 26, 26)
         v.setSpacing(16)
 
-        head = QLabel("模板与助战")
-        head.setObjectName("pageTitle")
-        v.addWidget(head)
+        # 英雄卡：运行控制
+        hero, hv = self._card()
+        hv.setSpacing(12)
+        top = QHBoxLayout()
+        top.setSpacing(14)
+        tile = QFrame()
+        tile.setObjectName("iconTile")
+        tile.setFixedSize(46, 46)
+        tile_lay = QVBoxLayout(tile)
+        tile_lay.setContentsMargins(0, 0, 0, 0)
+        tile_icon = QLabel()
+        tile_icon.setPixmap(svg_icon("play", _T["primary"], 22).pixmap(22, 22))
+        tile_icon.setAlignment(Qt.AlignCenter)
+        tile_lay.addWidget(tile_icon)
+        top.addWidget(tile)
+        top.addSpacing(2)
 
-        tpl_card, tv = self._card("识别模板（内置可直接用，框选可覆盖为自定义）")
+        title_col = QVBoxLayout()
+        title_col.setSpacing(2)
+        t = QLabel("自动结算")
+        t.setStyleSheet("font-size: 17px; font-weight: 700;")
+        self.state_label = QLabel("待机")
+        self.state_label.setStyleSheet(f"font-size: 12px; font-weight: 600; color: {_T['label2']};")
+        title_col.addWidget(t)
+        title_col.addWidget(self.state_label)
+        top.addLayout(title_col, 1)
+        hv.addLayout(top)
+
+        ctl = QHBoxLayout()
+        ctl.setSpacing(8)
+        self.win_combo = QComboBox()
+        self.win_combo.setMinimumWidth(220)
+        ctl.addWidget(self.win_combo, 1)
+        refresh_btn = QPushButton()
+        refresh_btn.setObjectName("ghost")
+        refresh_btn.setIcon(svg_icon("refresh", _T["icon"], 15))
+        refresh_btn.setFixedWidth(38)
+        refresh_btn.setToolTip("刷新窗口列表")
+        refresh_btn.clicked.connect(self.refresh_windows)
+        ctl.addWidget(refresh_btn)
+        self.run_btn = QPushButton("开始")
+        self.run_btn.setObjectName("primary")
+        self.run_btn.setIcon(svg_icon("play", "#FFFFFF", 14))
+        self.run_btn.setMinimumWidth(120)
+        self.run_btn.setCursor(Qt.PointingHandCursor)
+        self.run_btn.clicked.connect(self.on_start)
+        self.stop_btn = QPushButton("结束")
+        self.stop_btn.setObjectName("danger")
+        self.stop_btn.setMinimumWidth(100)
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.setCursor(Qt.PointingHandCursor)
+        self.stop_btn.clicked.connect(self.on_stop)
+        ctl.addWidget(self.run_btn)
+        ctl.addWidget(self.stop_btn)
+        hv.addLayout(ctl)
+        v.addWidget(hero)
+
+        # 模板卡 + 助战卡（左右两列）
+        row = QHBoxLayout()
+        row.setSpacing(16)
+
+        tpl_card, tv = self._card("识别模板")
+        tpl_hint = QLabel("内置模板可直接使用，框选可覆盖为自定义")
+        tpl_hint.setObjectName("hint")
+        tv.addWidget(tpl_hint)
         self._slot_status: dict[str, QLabel] = {}
-        grid = QVBoxLayout()
-        grid.setSpacing(8)
         for key, name, desc in TEMPLATE_SLOTS:
-            grid.addLayout(self._slot_row(key, name, desc))
-        tv.addLayout(grid)
-        v.addWidget(tpl_card)
+            tv.addLayout(self._slot_row(key, name, desc))
 
-        sup_card, sv2 = self._card("助战点击位置（框选整行，点击其中心；至少录一行）")
+        sup_card, sv2 = self._card("助战位置")
+        sv2.setSpacing(10)
+        sup_hint = QLabel("框选要点的整行，点击其中心；至少录一行")
+        sup_hint.setObjectName("hint")
+        sv2.addWidget(sup_hint)
+        sv2.addStretch(1)
         use_row = QHBoxLayout()
-        use_row.addWidget(QLabel("使用:"))
+        use_row.setSpacing(10)
         self.row_radios: dict[int, QRadioButton] = {}
         for i in (1, 2, 3):
             rb = QRadioButton(f"第{i}行")
@@ -517,10 +647,10 @@ class MainWindow(QMainWindow):
         use_row.addStretch(1)
         sv2.addLayout(use_row)
         for i in (1, 2, 3):
-            sv2.addLayout(self._slot_row(f"support_row{i}", f"助战第{i}行", "运行中可随时切换使用"))
-        v.addWidget(sup_card)
-        v.addStretch(1)
-
+            sv2.addLayout(self._slot_row(f"support_row{i}", f"助战第{i}行", "运行中可随时切换"))
+        row.addWidget(tpl_card, 3)
+        row.addWidget(sup_card, 2)
+        v.addLayout(row, 1)
         scroll.setWidget(page)
         return scroll
 
@@ -532,30 +662,28 @@ class MainWindow(QMainWindow):
         lbl = QLabel(name)
         lbl.setStyleSheet("font-weight: 600;")
         sub = QLabel(desc)
-        sub.setObjectName("muted")
-        sub.setStyleSheet(f"font-size: 11px; color: {_T['muted']};")
+        sub.setObjectName("hint")
         col.addWidget(lbl)
         col.addWidget(sub)
         row.addLayout(col, 1)
         status = QLabel()
-        status.setMinimumWidth(64)
+        status.setMinimumWidth(56)
         status.setAlignment(Qt.AlignCenter)
         self._slot_status[key] = status
         row.addWidget(status)
-        btn = QPushButton("框选")
-        btn.setFixedWidth(72)
+        btn = QPushButton(svg_icon("crop", _T["icon"], 14), "框选")
+        btn.setFixedWidth(84)
         btn.setCursor(Qt.PointingHandCursor)
         btn.clicked.connect(lambda _, k=key: self.on_record(k))
         row.addWidget(btn)
         return row
 
-    # ---- 页 3：设置 ----
+    # ---- 页 1：设置 ----
     def _build_settings_page(self) -> QWidget:
         page = QWidget()
         v = QVBoxLayout(page)
-        v.setContentsMargins(24, 24, 24, 24)
+        v.setContentsMargins(26, 22, 26, 26)
         v.setSpacing(16)
-
         head = QLabel("设置")
         head.setObjectName("pageTitle")
         v.addWidget(head)
@@ -575,7 +703,7 @@ class MainWindow(QMainWindow):
         thr_row.addWidget(self.threshold_spin)
         rv.addLayout(thr_row)
         thr_hint = QLabel("误点别的界面就调高；该点的时候没点就调低")
-        thr_hint.setObjectName("muted")
+        thr_hint.setObjectName("hint")
         rv.addWidget(thr_hint)
 
         hold_row = QHBoxLayout()
@@ -592,17 +720,17 @@ class MainWindow(QMainWindow):
         hold_row.addWidget(self.hold_spin)
         rv.addLayout(hold_row)
         hold_hint = QLabel("目标需在画面上持续显示 n 秒才点击，防结算动画误触")
-        hold_hint.setObjectName("muted")
+        hold_hint.setObjectName("hint")
         rv.addWidget(hold_hint)
         v.addWidget(rec_card)
         v.addStretch(1)
         return page
 
-    # ---- 页 4：日志 ----
+    # ---- 页 2：日志 ----
     def _build_log_page(self) -> QWidget:
         page = QWidget()
         v = QVBoxLayout(page)
-        v.setContentsMargins(24, 24, 24, 24)
+        v.setContentsMargins(26, 22, 26, 26)
         v.setSpacing(16)
         head = QLabel("日志")
         head.setObjectName("pageTitle")
@@ -624,7 +752,7 @@ class MainWindow(QMainWindow):
     def _capture_region(self, rect: tuple):
         hwnd = self.current_hwnd()
         if hwnd is None:
-            QMessageBox.warning(self, "提示", "请先在「运行」页选择模拟器窗口")
+            QMessageBox.warning(self, "提示", "请先在英雄卡选择模拟器窗口")
             return None
         img = crop_screen_rect(hwnd, rect)
         if img is None:
@@ -702,8 +830,9 @@ class MainWindow(QMainWindow):
 
     def _set_state(self, text: str, color: str) -> None:
         self.state_label.setText(text)
-        self.state_label.setStyleSheet(f"font-size: 18px; font-weight: 700; color: {color};")
-        self.state_dot.setStyleSheet(f"color: {color}; font-size: 14px;")
+        self.state_label.setStyleSheet(
+            f"font-size: 12px; font-weight: 700; color: {color};"
+        )
 
     # ================= 开始 / 结束 =================
     def on_start(self) -> None:
@@ -722,7 +851,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self, "缺少助战位置",
                 f"当前选择的「第{use_row}行」尚未框选录入。\n"
-                "请先在「模板」页的「助战第" + str(use_row) + "行」处点「框选」选取整行，"
+                "请先在「助战第" + str(use_row) + "行」处点「框选」选取整行，"
                 "或切换到已录入的行。",
             )
             return
@@ -745,9 +874,8 @@ class MainWindow(QMainWindow):
     def _on_engine_state(self, text: str) -> None:
         self.state_label.setText(text)
         self.state_label.setStyleSheet(
-            f"font-size: 15px; font-weight: 700; color: {_T['text']};"
+            f"font-size: 12px; font-weight: 700; color: {_T['text']};"
         )
-        self.state_dot.setStyleSheet(f"color: {_T['primary']}; font-size: 14px;")
 
     def _pick_window_dialog(self) -> int | None:
         """开始时未选窗口则弹窗选择。"""
@@ -777,7 +905,7 @@ class MainWindow(QMainWindow):
         self.run_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self._engine = None
-        self._set_state("待机", _T["muted"])
+        self._set_state("待机", _T["label2"])
         self.log("[结束] 引擎已退出")
 
     # ================= 窗口 / 日志 =================
