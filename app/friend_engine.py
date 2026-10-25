@@ -1,12 +1,13 @@
 """友情点召唤自动循环引擎。
 
 流程（用户手动进入友情点召唤界面后点「开始」）：
-  1. 识别「友情点召唤」画面 → 点击录入的「召唤 x100」位置
+  1. 识别「友情点召唤」画面 → 点击「召唤 x100」按钮（模板识别位置）
   2. 弹窗「决定」→ 点击识别到的按钮位置
-  3. 点完决定 0.5 秒后，每 0.5 秒点一次屏幕正中央跳过召唤动画，
-     直到识别到「继续进行100次召唤」
-  4. 点击「继续进行100次召唤」→ 弹窗「决定」→ 回到步骤 1 循环
-  5. 任意时刻识别到停止用素材图 → 自动停止
+  3. 每次点完「决定」（无论首抽还是继续召唤后）0.5 秒起每 0.5 秒点一次
+     屏幕正中央跳过召唤动画，直到：
+     - 识别到「继续进行100次召唤」→ 点击 → 弹窗「决定」→ 回到步骤 3
+     - 识别到「友情点召唤」画面（友情点用完/结果翻完）→ 回到步骤 1
+  4. 任意时刻识别到停止用素材图 → 自动停止
 
 模板加载优先级：assets/templates/{key}.png > assets/templates/builtin/{key}.png
 「决定」弹窗（friend_confirm）缺失时回退用补体力的通用「决定」模板。
@@ -67,7 +68,6 @@ class FriendEngine(QThread):
         self._templates: dict = {}
         self._x100_point: tuple[float, float] | None = None
         self._state = S_WAIT_SUMMON
-        self._skip_next = "skip"      # 「决定」点击后的去向：skip / summon
         self._skip_t0 = 0.0           # 开始连点屏幕中央的时间
         self._last_center = 0.0
         self._last_click = 0.0        # 任意引擎点击时间（限频）
@@ -193,7 +193,6 @@ class FriendEngine(QThread):
         click_at(cx, cy)
         self._last_click = now
         self._state = S_WAIT_CONFIRM
-        self._skip_next = "skip"
         msg = f"识别到「友情点召唤」→ 已点{pos}，等待「决定」弹窗…"
         self.log_signal.emit(msg)
         self.state_signal.emit(msg)
@@ -216,18 +215,16 @@ class FriendEngine(QThread):
         wl, wt, wr, wb = get_client_rect_on_screen(self._hwnd)
         click_at(wl + x + w // 2, wt + y + h // 2)
         self._last_click = now
-        if self._skip_next == "skip":
-            self._state = S_SKIP
-            self._skip_t0 = now + SKIP_DELAY
-            self._last_center = 0.0
-            msg = f"「决定」已点（得分 {score:.2f}）→ 0.5 秒后连点屏幕中央跳过动画…"
-        else:
-            self._state = S_WAIT_SUMMON
-            msg = f"「决定」已点（得分 {score:.2f}）→ 回到友情点召唤循环"
+        # 无论首抽还是「继续召唤」后的决定，后面都有召唤动画，一律进跳动画阶段
+        self._state = S_SKIP
+        self._skip_t0 = now + SKIP_DELAY
+        self._last_center = 0.0
+        msg = f"「决定」已点（得分 {score:.2f}）→ 0.5 秒后连点屏幕中央跳过动画…"
         self.log_signal.emit(msg)
         self.state_signal.emit(msg)
 
     def _step_skip(self, img, now: float) -> None:
+        # 1) 优先「继续进行100次召唤」：出现就点（等它时不再点中央）
         cont = self._templates.get("friend_continue")
         if cont is not None:
             hit = find_template(img, cont, self._threshold)
@@ -240,7 +237,6 @@ class FriendEngine(QThread):
                     click_at(wl + x + w // 2, wt + y + h // 2)
                     self._last_click = now
                     self._state = S_WAIT_CONFIRM
-                    self._skip_next = "summon"
                     msg = (f"识别到「继续进行100次召唤」（得分 {score:.2f}）"
                            "→ 已点击，等待「决定」弹窗…")
                     self.log_signal.emit(msg)
@@ -248,7 +244,22 @@ class FriendEngine(QThread):
                 return
             self._hold_since.pop("friend_continue", None)
 
-        # 「继续进行100次召唤」未出现：按节奏点屏幕正中央跳过动画
+        # 2) 回到「友情点召唤」画面（友情点用完/结果翻完）→ 退出跳动画，回主循环
+        sm = self._templates.get("friend_summon")
+        if sm is not None:
+            hit = find_template(img, sm, self._threshold)
+            if hit is not None:
+                since = self._hold_since.setdefault("friend_summon", now)
+                if now - since >= HOLD:
+                    self._hold_since.pop("friend_summon", None)
+                    self._state = S_WAIT_SUMMON
+                    msg = "已回到友情点召唤画面 → 继续循环"
+                    self.log_signal.emit(msg)
+                    self.state_signal.emit(msg)
+                return
+            self._hold_since.pop("friend_summon", None)
+
+        # 3) 都没出现：按节奏点屏幕正中央跳过召唤动画
         if now < self._skip_t0:
             return
         if now - self._last_center < SKIP_INTERVAL:
