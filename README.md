@@ -6,7 +6,7 @@
 
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
 ![Python](https://img.shields.io/badge/python-3.10%2B-green)
-![Version](https://img.shields.io/badge/version-1.0.3-6C63FF)
+![Version](https://img.shields.io/badge/version-1.0.4-6C63FF)
 ![License](https://img.shields.io/badge/license-MIT-orange)
 
 纯本地运行的 FGO（Fate/Grand Order）辅助工具：**战斗本体由玩家手动打**，

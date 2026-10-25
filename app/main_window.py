@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import math
 import os
 import sys
 import time
@@ -25,7 +26,6 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFrame,
-    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -99,6 +99,14 @@ _ICON_PATHS = {
 }
 
 
+def _render_mult() -> int:
+    """图标/位图超采样倍数：跟随屏幕实际 devicePixelRatio（至少 2x），
+    否则在 125%/150% 缩放下位图被二次缩放，看起来发糊。"""
+    scr = QApplication.primaryScreen()
+    dpr = scr.devicePixelRatio() if scr else 1.0
+    return max(2, math.ceil(dpr))
+
+
 def svg_icon(name: str, color: str, size: int = 18) -> QIcon:
     body = _ICON_PATHS[name]
     svg = (
@@ -107,13 +115,24 @@ def svg_icon(name: str, color: str, size: int = 18) -> QIcon:
         f'stroke-linecap="round" stroke-linejoin="round">{body}</svg>'
     )
     renderer = QSvgRenderer(bytearray(svg.encode("utf-8")))
-    pm = QPixmap(size * 2, size * 2)  # 2x 抗锯齿
+    mult = _render_mult()
+    pm = QPixmap(size * mult, size * mult)
     pm.fill(Qt.transparent)
     painter = QPainter(pm)
-    renderer.render(painter, QRect(0, 0, size * 2, size * 2))
+    renderer.render(painter, QRect(0, 0, size * mult, size * mult))
     painter.end()
-    pm.setDevicePixelRatio(2.0)
+    pm.setDevicePixelRatio(float(mult))
     return QIcon(pm)
+
+
+def _dpr_pixmap(path: str, size: int) -> QPixmap:
+    """按屏幕 devicePixelRatio 加载位图，避免高分屏下发糊。"""
+    src = QPixmap(path)
+    mult = _render_mult()
+    out = src.scaled(size * mult, size * mult,
+                     Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    out.setDevicePixelRatio(float(mult))
+    return out
 
 
 def build_stylesheet() -> str:
@@ -149,9 +168,15 @@ def build_stylesheet() -> str:
         background: rgba(108, 99, 255, 0.18); color: {t['text']};
         border-left: 3px solid {t['primary']}; padding-left: 9px;
     }}
+    /* 折叠态：隐藏文字，图标居中 */
+    QPushButton#nav[collapsed="true"] {{ text-align: center; padding: 0; }}
+    QPushButton#nav[collapsed="true"]:checked {{
+        border-left: none; padding: 0;
+        background: rgba(108, 99, 255, 0.18); color: {t['text']};
+    }}
 
     /* ---------- 标题栏 ---------- */
-    #titlebar {{ background: transparent; border-bottom: 1px solid {t['sep']}; }}
+    #titlebar {{ background: transparent; }}
     QLabel#tbTitle {{ font-size: 12px; font-weight: 600; color: {t['label2']}; }}
     QPushButton#winbtn {{
         background: transparent; border: none; border-radius: 0;
@@ -434,8 +459,7 @@ class MainWindow(QMainWindow):
         icon_png = os.path.normpath(os.path.join(TEMPLATE_DIR, "..", "icon.png"))
         logo = QLabel()
         if os.path.exists(icon_png):
-            logo.setPixmap(QPixmap(icon_png).scaled(
-                22, 22, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            logo.setPixmap(_dpr_pixmap(icon_png, 22))
         h.addWidget(logo)
         h.addStretch(1)
 
@@ -502,15 +526,14 @@ class MainWindow(QMainWindow):
         sv.setContentsMargins(12, 16, 12, 12)
         sv.setSpacing(4)
 
-        # logo 区 + 折叠按钮
+        # 顶部：logo + 标题 + 折叠按钮（折叠时整体隐藏，由展开按钮接管）
         logo_row = QHBoxLayout()
         logo_row.setSpacing(10)
-        logo = QLabel()
+        self._logo = QLabel()
         icon_png = os.path.normpath(os.path.join(TEMPLATE_DIR, "..", "icon.png"))
         if os.path.exists(icon_png):
-            logo.setPixmap(QPixmap(icon_png).scaled(
-                32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        logo_row.addWidget(logo)
+            self._logo.setPixmap(_dpr_pixmap(icon_png, 32))
+        logo_row.addWidget(self._logo)
         col = QVBoxLayout()
         col.setSpacing(0)
         self._app_title = QLabel("北斋FGO助手")
@@ -529,6 +552,17 @@ class MainWindow(QMainWindow):
         self._btn_collapse.clicked.connect(self._toggle_sidebar)
         logo_row.addWidget(self._btn_collapse)
         sv.addLayout(logo_row)
+
+        # 折叠态：顶部居中的展开按钮（64px 宽度下 logo 行放不下，换成单按钮）
+        self._btn_expand = QPushButton()
+        self._btn_expand.setObjectName("ghost")
+        self._btn_expand.setFixedSize(28, 28)
+        self._btn_expand.setIcon(svg_icon("expand", _T["icon"], 14))
+        self._btn_expand.setCursor(Qt.PointingHandCursor)
+        self._btn_expand.setToolTip("展开侧边栏")
+        self._btn_expand.clicked.connect(self._toggle_sidebar)
+        self._btn_expand.setVisible(False)
+        sv.addWidget(self._btn_expand, 0, Qt.AlignHCenter)
         sv.addSpacing(16)
 
         self._caption = QLabel("功能菜单")
@@ -538,14 +572,19 @@ class MainWindow(QMainWindow):
 
         self._nav_buttons: dict[int, QPushButton] = {}
         self._nav_text: dict[int, str] = {}
-        for idx, (name, icon) in enumerate([
-            ("自动结算", "play"), ("设置", "settings"), ("日志", "log"),
-        ]):
-            self._nav_text[idx] = name
-            self._nav_buttons[idx] = self._make_nav_btn(sv, idx, name, icon)
+        # 顶部只放主功能
+        self._nav_text[0] = "自动结算"
+        self._nav_buttons[0] = self._make_nav_btn(sv, 0, "自动结算", "play")
         self._nav_buttons[0].setChecked(True)
 
         sv.addStretch(1)
+
+        # 底部：设置 / 日志 + 版本号
+        self._nav_text[1] = "设置"
+        self._nav_buttons[1] = self._make_nav_btn(sv, 1, "设置", "settings")
+        self._nav_text[2] = "日志"
+        self._nav_buttons[2] = self._make_nav_btn(sv, 2, "日志", "log")
+        sv.addSpacing(8)
         self._ver_label = QLabel(f"v{__version__}")
         self._ver_label.setObjectName("caption")
         sv.addWidget(self._ver_label)
@@ -574,12 +613,15 @@ class MainWindow(QMainWindow):
         show = not self._collapsed
         for idx, btn in self._nav_buttons.items():
             btn.setText(self._nav_text[idx] if show else "")
-            btn.setToolTip(self._nav_text[idx])
-        self._btn_collapse.setIcon(svg_icon(
-            "expand" if self._collapsed else "collapse", _T["icon"], 14))
-        self._btn_collapse.setToolTip("展开侧边栏" if self._collapsed else "收起侧边栏")
-        for w in (self._app_title, self._app_sub, self._caption, self._ver_label):
+            btn.setToolTip("" if show else self._nav_text[idx])
+            # 切换 QSS 属性选择器：折叠态图标居中
+            btn.setProperty("collapsed", not show)
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+        for w in (self._logo, self._app_title, self._app_sub,
+                  self._caption, self._ver_label, self._btn_collapse):
             w.setVisible(show)
+        self._btn_expand.setVisible(not show)
 
     def _make_nav_btn(self, layout: QVBoxLayout, idx: int, name: str, icon: str) -> QPushButton:
         btn = QPushButton(svg_icon(icon, _T["icon"], 16), name)

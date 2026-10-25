@@ -18,9 +18,14 @@ def _enable_dpi_awareness() -> None:
 
 def main() -> None:
     _enable_dpi_awareness()
+    from PySide6.QtCore import Qt
     from PySide6.QtGui import QFont
     from PySide6.QtWidgets import QApplication
 
+    # 显式声明缩放策略：125%/150% 等分数缩放按原样传递，禁止取整，
+    # 否则 Qt 按 1x 渲染再由 DWM 拉伸，整个界面发糊。
+    QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     from app.main_window import MainWindow
 
     app = QApplication(sys.argv)
