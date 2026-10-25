@@ -19,6 +19,7 @@ assets/_icon_work/
 
 # 用户自己的截图素材
 screenshots/
+docs/
 
 # IDE
 .idea/

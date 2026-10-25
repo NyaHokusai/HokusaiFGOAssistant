@@ -6,13 +6,12 @@
 
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
 ![Python](https://img.shields.io/badge/python-3.10%2B-green)
+![Version](https://img.shields.io/badge/version-1.0.1-6C63FF)
 ![License](https://img.shields.io/badge/license-MIT-orange)
 
 纯本地运行的 FGO（Fate/Grand Order）辅助工具：**战斗本体由玩家手动打**，
 每局结束后程序自动接管结算流程并进入下一把。纯屏幕截图 + 模拟点击，
 不读取内存、不修改游戏数据、不发包。
-
-<img src="docs/screenshot_run.png" width="720" alt="HFA 界面 - 运行页"/>
 
 </div>
 

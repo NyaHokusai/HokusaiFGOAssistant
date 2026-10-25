@@ -15,13 +15,14 @@ import time
 
 import cv2
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtGui import QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
     QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -36,6 +37,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import __version__
 from .capture import crop_screen_rect, get_client_rect_on_screen, list_windows
 from .fgo_engine import FgoEngine
 from .region_selector import RegionSelector
@@ -82,55 +84,79 @@ def _rgba(rgb, alpha: float) -> str:
 
 
 def build_stylesheet(solid: bool) -> str:
-    """生成全局 QSS。solid=True 时背景不透明（系统不支持毛玻璃的回退）。"""
+    """生成全局 QSS（Apple HIG 暗色材质：16px 圆角玻璃卡 + 次级标签色 + 4pt 网格）。"""
     a = 1.0 if solid else _BACKDROP_ALPHA
-    card_a = 0.08 if solid else 0.05
     t = _T
+    # Apple 暗色玻璃材质：卡片 rgba(28,28,30,0.72)，边线 rgba(255,255,255,0.08)
+    glass = "rgba(30, 30, 46, 0.72)" if not solid else "rgba(30, 30, 46, 0.97)"
+    fill = "rgba(120, 120, 128, 0.22)"          # Apple Secondary Fill (dark)
+    label2 = "rgba(235, 235, 245, 0.6)"          # Label Secondary (dark)
+    label3 = "rgba(235, 235, 245, 0.35)"         # Label Tertiary (dark)
+    sep = "rgba(255, 255, 255, 0.08)"            # Separator
     return f"""
     QWidget {{ color: {t['text']}; font-size: 13px; }}
     #root {{ background: {_rgba(t['bg'], a)}; }}
     #sidebar {{
         background: {_rgba(t['sidebar'], a if not solid else 1.0)};
-        border-right: 1px solid {_rgba(t['card_border'], 0.6)};
+        border-right: 1px solid {sep};
     }}
-    QLabel#appTitle {{ font-size: 16px; font-weight: 700; }}
-    QLabel#appSub {{ font-size: 10px; color: {t['muted']}; letter-spacing: 3px; }}
+    QLabel#appTitle {{ font-size: 17px; font-weight: 700; letter-spacing: 0.3px; }}
+    QLabel#appSub {{ font-size: 10px; color: {label3}; letter-spacing: 3px; }}
+    QLabel#pageTitle {{ font-size: 22px; font-weight: 700; letter-spacing: 0.2px; }}
     QLabel#sectionTitle {{ font-size: 15px; font-weight: 700; }}
-    QLabel#muted {{ color: {t['muted']}; }}
+    QLabel#muted {{ color: {label2}; }}
+    QLabel#hint {{ color: {label3}; font-size: 12px; }}
 
     QPushButton#nav {{
-        text-align: left; padding: 0 14px; min-height: 38px;
+        text-align: left; padding: 0 14px; min-height: 40px;
         border: none; border-radius: 10px; background: transparent;
-        color: {t['muted']}; font-size: 13px; font-weight: 600;
+        color: {label2}; font-size: 13px; font-weight: 600;
     }}
-    QPushButton#nav:hover {{ background: rgba(255, 255, 255, 0.07); color: {t['text']}; }}
-    QPushButton#nav:checked {{ background: rgba(108, 99, 255, 0.22); color: {t['text']}; }}
+    QPushButton#nav:hover {{ background: rgba(255, 255, 255, 0.06); color: {t['text']}; }}
+    QPushButton#nav:checked {{
+        background: rgba(108, 99, 255, 0.20); color: {t['text']};
+        border-left: 3px solid {t['primary']}; padding-left: 11px;
+    }}
 
     QFrame#card {{
-        background: rgba(255, 255, 255, {card_a});
-        border: 1px solid {_rgba(t['card_border'], 0.6)};
-        border-radius: 12px;
+        background: {glass};
+        border: 1px solid {sep};
+        border-radius: 16px;
     }}
-    QFrame#card[flat="true"] {{ background: transparent; border: none; }}
 
     QPushButton {{
-        background: rgba(255, 255, 255, {card_a + 0.03}); color: {t['text']};
-        border: 1px solid {_rgba(t['card_border'], 0.6)};
-        border-radius: 10px; padding: 0 16px; min-height: 34px; font-weight: 600;
+        background: {fill}; color: {t['text']};
+        border: none;
+        border-radius: 10px; padding: 0 16px; min-height: 36px; font-weight: 600;
     }}
-    QPushButton:hover {{ background: rgba(255, 255, 255, 0.14); }}
-    QPushButton:pressed {{ background: rgba(255, 255, 255, 0.08); }}
-    QPushButton:disabled {{ color: {t['muted']}; background: rgba(255, 255, 255, 0.03); }}
-    QPushButton#primary {{ background: {t['primary']}; border: none; color: white; }}
+    QPushButton:hover {{ background: rgba(120, 120, 128, 0.32); }}
+    QPushButton:pressed {{ background: rgba(120, 120, 128, 0.28); }}
+    QPushButton:disabled {{ color: {label3}; background: rgba(120, 120, 128, 0.12); }}
+    QPushButton#primary {{
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #7D75FF, stop:1 #6C63FF);
+        border: none; color: white; min-height: 44px; border-radius: 12px;
+        font-size: 14px; font-weight: 700;
+    }}
     QPushButton#primary:hover {{ background: {t['primary_h']}; }}
-    QPushButton#primary:disabled {{ background: {_rgba((108, 99, 255), 0.35)}; color: rgba(255,255,255,0.6); }}
-    QPushButton#danger {{ background: transparent; color: {t['danger']}; border: 1px solid rgba(255,101,132,0.5); }}
-    QPushButton#danger:hover {{ background: rgba(255,101,132,0.15); }}
-    QPushButton#danger:disabled {{ color: {t['muted']}; border-color: {_rgba(t['card_border'], 0.5)}; }}
+    QPushButton#primary:disabled {{
+        background: rgba(108, 99, 255, 0.35); color: rgba(255,255,255,0.6);
+    }}
+    QPushButton#danger {{
+        background: rgba(255, 101, 132, 0.12); color: {t['danger']};
+        min-height: 44px; border-radius: 12px; font-size: 14px; font-weight: 700;
+    }}
+    QPushButton#danger:hover {{ background: rgba(255, 101, 132, 0.22); }}
+    QPushButton#danger:disabled {{ color: {label3}; background: rgba(120,120,128,0.12); }}
+    QPushButton#ghost {{
+        background: transparent; border: none; color: {label2};
+        min-height: 30px; font-weight: 600;
+    }}
+    QPushButton#ghost:hover {{ color: {t['text']}; background: rgba(255,255,255,0.06); }}
 
     QComboBox, QDoubleSpinBox {{
-        background: rgba(255, 255, 255, {card_a + 0.03}); border: 1px solid {_rgba(t['card_border'], 0.6)};
-        border-radius: 10px; min-height: 34px; padding: 0 10px; color: {t['text']};
+        background: {fill}; border: none;
+        border-radius: 10px; min-height: 36px; padding: 0 10px; color: {t['text']};
     }}
     QComboBox:hover, QDoubleSpinBox:hover {{ border-color: {t['primary']}; }}
     QComboBox::drop-down {{ border: none; width: 26px; }}
@@ -144,13 +170,13 @@ def build_stylesheet(solid: bool) -> str:
     QRadioButton {{ spacing: 6px; }}
     QRadioButton::indicator {{
         width: 16px; height: 16px; border-radius: 8px;
-        border: 2px solid {t['muted']}; background: transparent;
+        border: 2px solid {label2}; background: transparent;
     }}
     QRadioButton::indicator:checked {{ border: 5px solid {t['primary']}; background: white; }}
 
     QPlainTextEdit#log {{
-        background: {_rgba(t['card'], 0.9)}; border: 1px solid {_rgba(t['card_border'], 0.6)};
-        border-radius: 12px; padding: 10px;
+        background: {glass}; border: 1px solid {sep};
+        border-radius: 16px; padding: 12px;
         font-family: 'Consolas', 'Courier New', monospace; font-size: 12px; color: #C8C8DE;
     }}
     QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px; }}
@@ -301,8 +327,14 @@ class MainWindow(QMainWindow):
     def _card(title: str | None = None) -> tuple[QFrame, QVBoxLayout]:
         card = QFrame()
         card.setObjectName("card")
+        # Apple 阴影 Level 1（克制的一层深度）
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(18)
+        shadow.setOffset(0, 3)
+        shadow.setColor(QColor(0, 0, 0, 70))
+        card.setGraphicsEffect(shadow)
         v = QVBoxLayout(card)
-        v.setContentsMargins(16, 14, 16, 14)
+        v.setContentsMargins(20, 18, 20, 18)
         v.setSpacing(10)
         if title:
             lbl = QLabel(title)
@@ -344,20 +376,23 @@ class MainWindow(QMainWindow):
         sv.addLayout(logo_row)
         sv.addSpacing(18)
 
+        # 功能区：主要页面
         self._nav_buttons: list[QPushButton] = []
-        for idx, (name, symbol) in enumerate([("运行", "▶"), ("模板", "▦"), ("设置", "⚙"), ("日志", "☰")]):
-            btn = QPushButton(f"{symbol}   {name}")
-            btn.setObjectName("nav")
-            btn.setCheckable(True)
-            btn.setCursor(Qt.PointingHandCursor)
-            btn.clicked.connect(lambda _, i=idx: self._switch_page(i))
-            sv.addWidget(btn)
-            self._nav_buttons.append(btn)
+        for idx, (name, symbol) in enumerate([("运行", "▶"), ("模板", "▦")]):
+            self._nav_buttons.append(self._make_nav_btn(sv, idx, name, symbol))
         self._nav_buttons[0].setChecked(True)
 
+        # 系统区：固定在侧边栏底部
         sv.addStretch(1)
-        ver = QLabel("v1.0 · HFA")
-        ver.setObjectName("muted")
+        sys_label = QLabel("系统")
+        sys_label.setObjectName("appSub")
+        sv.addWidget(sys_label)
+        for idx, (name, symbol) in [(2, ("设置", "⚙")), (3, ("日志", "☰"))]:
+            self._nav_buttons.append(self._make_nav_btn(sv, idx, name, symbol))
+
+        sv.addSpacing(10)
+        ver = QLabel(f"v{__version__} · HFA")
+        ver.setObjectName("appSub")
         ver.setAlignment(Qt.AlignLeft)
         sv.addWidget(ver)
 
@@ -377,6 +412,15 @@ class MainWindow(QMainWindow):
         for i, btn in enumerate(self._nav_buttons):
             btn.setChecked(i == idx)
 
+    def _make_nav_btn(self, layout: QVBoxLayout, idx: int, name: str, symbol: str) -> QPushButton:
+        btn = QPushButton(f"{symbol}   {name}")
+        btn.setObjectName("nav")
+        btn.setCheckable(True)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.clicked.connect(lambda _, i=idx: self._switch_page(i))
+        layout.addWidget(btn)
+        return btn
+
     # ---- 页 1：运行 ----
     def _build_run_page(self) -> QWidget:
         page = QWidget()
@@ -385,7 +429,7 @@ class MainWindow(QMainWindow):
         v.setSpacing(16)
 
         head = QLabel("运行")
-        head.setObjectName("sectionTitle")
+        head.setObjectName("pageTitle")
         v.addWidget(head)
 
         # 状态卡
@@ -448,7 +492,7 @@ class MainWindow(QMainWindow):
         v.setSpacing(16)
 
         head = QLabel("模板与助战")
-        head.setObjectName("sectionTitle")
+        head.setObjectName("pageTitle")
         v.addWidget(head)
 
         tpl_card, tv = self._card("识别模板（内置可直接用，框选可覆盖为自定义）")
@@ -513,7 +557,7 @@ class MainWindow(QMainWindow):
         v.setSpacing(16)
 
         head = QLabel("设置")
-        head.setObjectName("sectionTitle")
+        head.setObjectName("pageTitle")
         v.addWidget(head)
 
         rec_card, rv = self._card("识别参数")
@@ -561,7 +605,7 @@ class MainWindow(QMainWindow):
         v.setContentsMargins(24, 24, 24, 24)
         v.setSpacing(16)
         head = QLabel("日志")
-        head.setObjectName("sectionTitle")
+        head.setObjectName("pageTitle")
         v.addWidget(head)
         self.log_view = QPlainTextEdit()
         self.log_view.setObjectName("log")
